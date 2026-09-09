@@ -13,7 +13,7 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-In a ROS 2 Jazzy workspace, also run:
+In a ROS 2 Lyrical or Jazzy workspace (CI runs both), also run:
 
 ```bash
 colcon build --packages-select bilateral_arc_clearance_controller

@@ -17,14 +17,14 @@
 #include "nav2_core/controller_exceptions.hpp"
 #include "nav2_costmap_2d/cost_values.hpp"
 #include "pluginlib/class_list_macros.hpp"
-#include "tf2/utils.h"
+#include "tf2/utils.hpp"
 
 namespace bac
 {
 
 void
-BacController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr &parent, std::string name,
-                         std::shared_ptr<tf2_ros::Buffer> tf,
+BacController::configure(const Nav2Node::WeakPtr &parent, std::string name,
+                         std::shared_ptr<Nav2TfBuffer> tf,
                          std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros)
 {
   parent_      = parent;
@@ -65,12 +65,19 @@ BacController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr &parent,
   clock_        = node->get_clock();
   if (!scan_topic_.empty())
   {
+    auto on_scan = [this](sensor_msgs::msg::LaserScan::ConstSharedPtr msg) {
+      std::lock_guard<std::mutex> lock(scan_mutex_);
+      latest_scan_ = msg;
+    };
+#if BAC_NAV2_API >= 2
+    // nav2::LifecycleNode's factory takes the callback before the QoS, which
+    // is optional there; the sensor-data profile is kept explicit.
     scan_sub_ = node->create_subscription<sensor_msgs::msg::LaserScan>(
-        scan_topic_, rclcpp::SensorDataQoS(),
-        [this](sensor_msgs::msg::LaserScan::ConstSharedPtr msg) {
-          std::lock_guard<std::mutex> lock(scan_mutex_);
-          latest_scan_ = msg;
-        });
+        scan_topic_, on_scan, rclcpp::SensorDataQoS());
+#else
+    scan_sub_ = node->create_subscription<sensor_msgs::msg::LaserScan>(
+        scan_topic_, rclcpp::SensorDataQoS(), on_scan);
+#endif
   }
   diagnostics_pub_ = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
       "diagnostics", rclcpp::SystemDefaultsQoS());
@@ -200,10 +207,47 @@ BacController::deactivate()
 }
 
 void
-BacController::setPlan(const nav_msgs::msg::Path &path)
+BacController::acceptPlan(const nav_msgs::msg::Path &path)
 {
   plan_ = path;
 }
+
+#if BAC_NAV2_API >= 2
+void
+BacController::newPathReceived(const nav_msgs::msg::Path &raw_global_path)
+{
+  // The minimal work the interface asks for: keep the plan. It is transformed
+  // into the base frame on every tick, in transformPlan().
+  acceptPlan(raw_global_path);
+}
+
+geometry_msgs::msg::TwistStamped
+BacController::computeVelocityCommands(const geometry_msgs::msg::PoseStamped &pose,
+                                       const geometry_msgs::msg::Twist &velocity,
+                                       nav2_core::GoalChecker * /*goal_checker*/,
+                                       const nav_msgs::msg::Path & /*transformed_global_plan*/,
+                                       const geometry_msgs::msg::PoseStamped & /*global_goal*/)
+{
+  // The path handler's plan is deliberately not used: it lives in the costmap
+  // global frame and is cut at the server's prune_distance, while the core's
+  // horizon is max_range in the base frame. See the header comment.
+  return computeCommand(pose, velocity);
+}
+#else
+void
+BacController::setPlan(const nav_msgs::msg::Path &path)
+{
+  acceptPlan(path);
+}
+
+geometry_msgs::msg::TwistStamped
+BacController::computeVelocityCommands(const geometry_msgs::msg::PoseStamped &pose,
+                                       const geometry_msgs::msg::Twist &velocity,
+                                       nav2_core::GoalChecker * /*goal_checker*/)
+{
+  return computeCommand(pose, velocity);
+}
+#endif
 
 std::vector<Point2D>
 BacController::collectObstaclePoints(const geometry_msgs::msg::PoseStamped &pose) const
@@ -422,9 +466,8 @@ BacController::transformPlan(const geometry_msgs::msg::PoseStamped & /*pose*/,
 }
 
 geometry_msgs::msg::TwistStamped
-BacController::computeVelocityCommands(const geometry_msgs::msg::PoseStamped &pose,
-                                       const geometry_msgs::msg::Twist &velocity,
-                                       nav2_core::GoalChecker * /*goal_checker*/)
+BacController::computeCommand(const geometry_msgs::msg::PoseStamped &pose,
+                              const geometry_msgs::msg::Twist &velocity)
 {
   // Speed limit re-caps the sampled window
   Params params = core_.params();

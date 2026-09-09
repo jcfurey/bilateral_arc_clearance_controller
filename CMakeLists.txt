@@ -44,7 +44,7 @@ if(ament_cmake_FOUND)
   # Installed because the installed documentation LINKS INTO THEM. README.md,
   # README.ja.md, docs/README.md, docs/en/README.md and both language versions
   # of docs/ablation_and_matched_evaluation.md carry 12 relative links to
-  # docker/nav2-jazzy/README.md and examples/gazebo/README.md between them; all
+  # docker/nav2/README.md and examples/gazebo/README.md between them; all
   # 12 resolve in the source tree and, until these two rules existed, none of
   # them resolved under share/${PROJECT_NAME} (measured by installing and
   # walking every relative link in every installed .md and .rst). Rewriting the
@@ -93,11 +93,24 @@ if(ament_cmake_FOUND)
   find_package(sensor_msgs REQUIRED)
   find_package(std_msgs REQUIRED)
 
+  # ROS dependencies are linked as the CMake targets their packages export,
+  # not through ament_target_dependencies(). That macro is deprecated from
+  # Kilted on, and in Lyrical find_package(ament_cmake) no longer defines it,
+  # so a package that still calls it fails to configure there. Message
+  # packages export their targets as <pkg>_TARGETS on every distribution this
+  # package builds on (Jazzy, Kilted, Lyrical); the rest export <pkg>::<name>.
+
   # Evaluation node: cmd_vel filter driven by a laser scan
   add_executable(bac_filter_node src/bac_filter_node.cpp)
-  target_link_libraries(bac_filter_node bac_core)
+  target_link_libraries(bac_filter_node PRIVATE
+      bac_core
+      rclcpp::rclcpp
+      ${geometry_msgs_TARGETS}
+      ${nav_msgs_TARGETS}
+      ${sensor_msgs_TARGETS}
+      ${std_msgs_TARGETS}
+  )
   target_compile_options(bac_filter_node PRIVATE -Wall -Wextra -Wpedantic)
-  ament_target_dependencies(bac_filter_node rclcpp geometry_msgs nav_msgs sensor_msgs std_msgs)
   install(TARGETS bac_filter_node DESTINATION lib/${PROJECT_NAME})
 
   if(BAC_BUILD_NAV2_PLUGIN)
@@ -109,15 +122,69 @@ if(ament_cmake_FOUND)
     find_package(diagnostic_msgs REQUIRED)
     find_package(tf2 REQUIRED)
     find_package(tf2_geometry_msgs REQUIRED)
+    find_package(tf2_ros REQUIRED)
 
-    # Nav2 controller plugin (verified against the ROS 2 Jazzy nav2_core API)
+    # Which nav2_core::Controller interface to implement. Nav2 1.5 (ROS 2
+    # Lyrical) changed it: the parent node is a nav2::LifecycleNode, setPlan()
+    # became newPathReceived(), and computeVelocityCommands() also receives the
+    # controller server's transformed plan and the goal. Nav2 1.3 (Jazzy) and
+    # 1.4 (Kilted) share the earlier interface. The version is the one
+    # nav2_core's package manifest reports through find_package(); BAC_NAV2_API
+    # overrides the detection for a source build that reports none.
+    set(BAC_NAV2_API "AUTO" CACHE STRING
+        "nav2_core::Controller interface: AUTO, 1 (Nav2 <= 1.4, Jazzy/Kilted) or 2 (Nav2 >= 1.5, Lyrical)")
+    if(BAC_NAV2_API STREQUAL "AUTO")
+      if(NOT nav2_core_VERSION)
+        message(FATAL_ERROR
+            "nav2_core reports no version, so the nav2_core::Controller interface cannot be "
+            "detected. Configure with -DBAC_NAV2_API=1 (Nav2 <= 1.4) or -DBAC_NAV2_API=2 (Nav2 >= 1.5).")
+      elseif(nav2_core_VERSION VERSION_GREATER_EQUAL 1.5.0)
+        set(_bac_nav2_api 2)
+      else()
+        set(_bac_nav2_api 1)
+      endif()
+    elseif(BAC_NAV2_API STREQUAL "1" OR BAC_NAV2_API STREQUAL "2")
+      set(_bac_nav2_api ${BAC_NAV2_API})
+    else()
+      message(FATAL_ERROR "BAC_NAV2_API must be AUTO, 1 or 2, got '${BAC_NAV2_API}'")
+    endif()
+    message(STATUS "nav2_core ${nav2_core_VERSION}: building for nav2_core::Controller interface ${_bac_nav2_api}")
+
+    # Nav2 controller plugin (built and tested against ROS 2 Jazzy and Lyrical)
     add_library(bilateral_arc_clearance_controller SHARED src/bac_controller.cpp)
-    target_link_libraries(bilateral_arc_clearance_controller bac_core)
+    # PUBLIC: the adapter test includes the plugin header, which selects its
+    # base-class signatures on this definition.
+    target_compile_definitions(bilateral_arc_clearance_controller PUBLIC BAC_NAV2_API=${_bac_nav2_api})
     target_compile_options(bilateral_arc_clearance_controller PRIVATE -Wall -Wextra -Wpedantic)
-    ament_target_dependencies(bilateral_arc_clearance_controller
-        rclcpp rclcpp_lifecycle pluginlib nav2_core nav2_costmap_2d nav2_util
-        diagnostic_msgs geometry_msgs nav_msgs sensor_msgs tf2 tf2_geometry_msgs
+    target_link_libraries(bilateral_arc_clearance_controller PUBLIC
+        bac_core
+        rclcpp::rclcpp
+        rclcpp_lifecycle::rclcpp_lifecycle
+        pluginlib::pluginlib
+        nav2_costmap_2d::nav2_costmap_2d_core
+        nav2_util::nav2_util_core
+        tf2::tf2
+        tf2_geometry_msgs::tf2_geometry_msgs
+        tf2_ros::tf2_ros
+        ${diagnostic_msgs_TARGETS}
+        ${geometry_msgs_TARGETS}
+        ${nav_msgs_TARGETS}
+        ${sensor_msgs_TARGETS}
     )
+    # nav2_core is header-only. Jazzy exports only its include directory;
+    # Kilted and Lyrical export an INTERFACE target that carries the
+    # dependencies the headers need (in Lyrical, nav2_ros_common among them).
+    if(TARGET nav2_core::nav2_core)
+      target_link_libraries(bilateral_arc_clearance_controller PUBLIC nav2_core::nav2_core)
+    else()
+      target_include_directories(bilateral_arc_clearance_controller PUBLIC ${nav2_core_INCLUDE_DIRS})
+    endif()
+    if(_bac_nav2_api EQUAL 2)
+      # nav2::LifecycleNode and nav2::TransformBuffer, the types interface 2
+      # names in its signatures.
+      find_package(nav2_ros_common REQUIRED)
+      target_link_libraries(bilateral_arc_clearance_controller PUBLIC nav2_ros_common::nav2_ros_common)
+    endif()
     install(TARGETS bilateral_arc_clearance_controller
         ARCHIVE DESTINATION lib
         LIBRARY DESTINATION lib
@@ -225,12 +292,9 @@ if(BUILD_TESTING)
   if(ament_cmake_FOUND)
     if(BAC_BUILD_NAV2_PLUGIN)
       add_executable(bac_ros_adapter_unit test/ros_adapter_unit.cpp)
-      target_link_libraries(bac_ros_adapter_unit bilateral_arc_clearance_controller)
+      # The plugin links its ROS dependencies PUBLIC, so this carries them all.
+      target_link_libraries(bac_ros_adapter_unit PRIVATE bilateral_arc_clearance_controller)
       target_compile_options(bac_ros_adapter_unit PRIVATE -Wall -Wextra -Wpedantic)
-      ament_target_dependencies(bac_ros_adapter_unit
-          rclcpp rclcpp_lifecycle nav2_core nav2_costmap_2d diagnostic_msgs
-          geometry_msgs nav_msgs sensor_msgs tf2
-      )
       add_test(NAME BacRosAdapterUnit COMMAND bac_ros_adapter_unit)
     endif()
   endif()

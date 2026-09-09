@@ -12,7 +12,7 @@ tracking priority in open space.
 The package provides three components:
 
 - `bac::BacCore`: a ROS-independent C++17 algorithm
-- `bac::BacController`: a Nav2 `nav2_core::Controller` plugin, tested with ROS 2 Jazzy
+- `bac::BacController`: a Nav2 `nav2_core::Controller` plugin, built and tested on ROS 2 Lyrical (Nav2 1.5) and Jazzy (Nav2 1.3)
 - `bac_filter_node`: an evaluation and legacy-integration node that reshapes an existing `cmd_vel` using raw scans
 
 The package is licensed under MIT and is currently version 0.1.0.
@@ -121,16 +121,23 @@ colcon test --packages-select bilateral_arc_clearance_controller
 colcon test-result --verbose
 ```
 
-For the same clean ROS 2 Jazzy/Nav2 build used by CI, including the controller
+The package builds on ROS 2 Lyrical (Nav2 1.5) and ROS 2 Jazzy (Nav2 1.3); CI
+runs both. The Nav2 controller interface changed between them, and the build
+selects the right one from the installed `nav2_core` version. Kilted (Nav2
+1.4) shares the Jazzy interface and is expected to build, but is not part of
+CI.
+
+For the same clean ROS 2 / Nav2 build used by CI, including the controller
 plugin and ROS adapter tests, use the Docker verification environment:
 
 ```bash
-./docker/nav2-jazzy/verify.sh
+./docker/nav2/verify.sh            # ROS 2 Lyrical
+./docker/nav2/verify.sh jazzy      # ROS 2 Jazzy
 ```
 
-See [ROS 2 Jazzy / Nav2 build verification](docker/nav2-jazzy/README.md) for
-details. It mounts the checkout read-only and leaves build artifacts inside the
-temporary container.
+See [ROS 2 Lyrical and Jazzy / Nav2 build verification](docker/nav2/README.md)
+for details. It mounts the checkout read-only and leaves build artifacts inside
+the temporary container.
 
 Minimal configuration follows. Adjust the footprint, braking capability, and rear sensor coverage for the robot.
 Installable examples are provided for
@@ -343,7 +350,7 @@ obstacles just in front of the bumper.
 - [Parameter reference](docs/en/parameters.md)
 - [Method comparison and evaluation](docs/en/method_comparison.md)
 - [BAC ablation and matched-condition evaluation](docs/en/ablation_and_matched_evaluation.md)
-- [ROS 2 Jazzy / Nav2 build verification](docker/nav2-jazzy/README.md)
+- [ROS 2 Lyrical and Jazzy / Nav2 build verification](docker/nav2/README.md)
 - [Reproducible Gazebo evidence](examples/gazebo/README.md)
 - [Release review history](docs/en/release_review_history.md)
 - [Public-release readiness checklist](docs/en/public_release_checklist.md)

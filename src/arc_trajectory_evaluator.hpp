@@ -27,7 +27,7 @@ namespace bac::detail
  * expression, which the compiler was free to contract into an FMA; a call
  * across a translation unit is not contracted the same way. Under the flags
  * this package actually ships (`Release`, i.e. `-O3 -DNDEBUG`, with no
- * `-march`, which is what CMakeLists and the Jazzy container both use) the
+ * `-march`, which is what CMakeLists and the Nav2 containers both use) the
  * outputs are bit-identical to the pre-sharing code - 1,296,000 random ticks
  * across the three models, zero differences. Adding `-march=native` breaks
  * that tie, for the HOLONOMIC model only: 648 of 240,000 ticks move, by at

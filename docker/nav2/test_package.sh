@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
+# Runs inside the ros:${ROS_DISTRO}-ros-base container that docker/nav2/verify.sh
+# builds. ROS_DISTRO comes from that image (jazzy or lyrical); the checks below
+# are the same for both.
 set -eo pipefail
 
+if [[ -z "${ROS_DISTRO:-}" || ! -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
+  echo "ROS_DISTRO is not set to an installed ROS 2 distribution: '${ROS_DISTRO:-}'" >&2
+  exit 2
+fi
 set +u
-source /opt/ros/jazzy/setup.bash
+source "/opt/ros/${ROS_DISTRO}/setup.bash"
 set -u
 
 readonly PACKAGE_NAME=bilateral_arc_clearance_controller
 readonly SOURCE_DIR=${BAC_SOURCE_DIR:-/source}
-readonly WORK_DIR=${BAC_WORK_DIR:-/tmp/bac-nav2-jazzy-ws}
+readonly WORK_DIR=${BAC_WORK_DIR:-/tmp/bac-nav2-${ROS_DISTRO}-ws}
 
 if [[ ! -f "${SOURCE_DIR}/package.xml" ]]; then
   echo "Package source was not found at ${SOURCE_DIR}" >&2
@@ -136,6 +143,27 @@ if run_filter_node "${RADIUS_LOG}" \
 fi
 echo "Ackermann installed-configuration checks passed."
 
+# --- installed launch file --------------------------------------------------
+# The launch file is Python and runs on the distribution's interpreter (3.12
+# on Jazzy, 3.14 on Lyrical), so it is loaded and started for real rather than
+# only installed. 124 is the timeout expiring on a launch that stayed up.
+readonly LAUNCH_LOG="${WORK_DIR}/filter-launch.log"
+LAUNCH_STATUS=0
+timeout 15s ros2 launch "${PACKAGE_NAME}" bac_filter.launch.py >"${LAUNCH_LOG}" 2>&1 \
+  || LAUNCH_STATUS=$?
+readonly LAUNCH_STATUS
+if [[ "${LAUNCH_STATUS}" -ne 124 ]]; then
+  echo "bac_filter.launch.py exited with ${LAUNCH_STATUS} instead of running:" >&2
+  cat "${LAUNCH_LOG}" >&2
+  exit 8
+fi
+if ! grep -q "bac_filter running" "${LAUNCH_LOG}"; then
+  echo "bac_filter.launch.py did not bring the filter node up:" >&2
+  cat "${LAUNCH_LOG}" >&2
+  exit 8
+fi
+echo "Installed launch file check passed."
+
 readonly OMNI_LOG="${WORK_DIR}/omni-tests.log"
 if ! ctest --test-dir "${WORK_DIR}/build/${PACKAGE_NAME}" \
     --label-regex omni --output-on-failure >"${OMNI_LOG}" 2>&1; then
@@ -194,4 +222,4 @@ if run_filter_node "${OMNI_VY_LOG}" \
 fi
 echo "Holonomic installed-configuration checks passed."
 
-echo "ROS 2 Jazzy/Nav2 plugin build and tests passed."
+echo "ROS 2 ${ROS_DISTRO}/Nav2 plugin build and tests passed."

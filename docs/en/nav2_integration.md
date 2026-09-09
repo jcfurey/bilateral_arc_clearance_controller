@@ -75,6 +75,26 @@ or Collision Monitor to implement fail-stop behavior. BAC reports `raw_scan`, co
 `costmap_fallback`; a fallback is WARN-level and includes its reason. `diagnostics_publish_period` controls the
 publication interval and a non-positive value disables it.
 
+## Supported ROS 2 distributions
+
+The plugin builds and is tested on ROS 2 Lyrical (Nav2 1.5) and ROS 2 Jazzy (Nav2 1.3). Kilted (Nav2 1.4)
+shares the Jazzy controller interface and is expected to build, but CI does not run it.
+
+Nav2 1.5 changed the `nav2_core::Controller` interface: the parent node is a `nav2::LifecycleNode`, `setPlan()`
+became `newPathReceived()`, and `computeVelocityCommands()` also receives the plan the Controller Server's
+path handler has transformed and pruned, together with the goal. The build selects the interface from the
+installed `nav2_core` version (`BAC_NAV2_API` in `CMakeLists.txt` overrides the detection for a source build that
+reports no version).
+
+**The plan handling does not change between the two.** BAC keeps the raw global plan, transforms it into the base
+frame through TF on every tick, and prunes it to `max_range` itself, exactly as described above. Under Nav2 1.5
+the path handler's plan is accepted and not consumed: it is expressed in the costmap's global frame and cut at
+the path handler's own `prune_distance` (2.0 m by default in Nav2 1.5), so following it would let a Controller
+Server parameter this package neither documents nor measures decide how much path the core sees. The path
+handler still runs in the Controller Server and still publishes `transformed_global_plan`; that topic shows the
+handler's window, not the window BAC evaluates. The Controller Server's `reset()` call at the end of a task is
+left at the interface's no-op default, so the core's state between tasks is the same as on Jazzy.
+
 ## Ackermann command contract
 
 Set `motion_model.type: ackermann` together with the measured minimum turning radius `turn_radius_min`. Those two

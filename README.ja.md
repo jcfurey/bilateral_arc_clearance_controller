@@ -11,7 +11,7 @@ Bilateral Arc Clearance（BAC、左右分離円弧クリアランス）は、候
 提供する構成要素は次の3つです。
 
 - `bac::BacCore`: ROSに依存しないC++17アルゴリズム
-- `bac::BacController`: Nav2 `nav2_core::Controller`プラグイン（ROS 2 Jazzyで検証）
+- `bac::BacController`: Nav2 `nav2_core::Controller`プラグイン（ROS 2 Lyrical（Nav2 1.5）とJazzy（Nav2 1.3）でビルド・検証）
 - `bac_filter_node`: 既存`cmd_vel`を生スキャンで整形する評価・レガシー統合用ノード
 
 ライセンスはMIT、現在のパッケージバージョンは0.1.0です。
@@ -114,14 +114,20 @@ colcon test --packages-select bilateral_arc_clearance_controller
 colcon test-result --verbose
 ```
 
-CIと同じクリーンなROS 2 Jazzy/Nav2環境でcontroller pluginとROS adapter testまで
+本パッケージはROS 2 Lyrical（Nav2 1.5）とROS 2 Jazzy（Nav2 1.3）でビルドでき、CIは両方を
+実行します。両者の間でNav2のcontrollerインターフェースが変わっており、ビルドはインストール済み
+`nav2_core`のバージョンから適切な方を選択します。Kilted（Nav2 1.4）はJazzyと同じインターフェース
+なのでビルドできる見込みですが、CIの対象ではありません。
+
+CIと同じクリーンなROS 2 / Nav2環境でcontroller pluginとROS adapter testまで
 検証する場合は、Docker環境を使用できます。
 
 ```bash
-./docker/nav2-jazzy/verify.sh
+./docker/nav2/verify.sh            # ROS 2 Lyrical
+./docker/nav2/verify.sh jazzy      # ROS 2 Jazzy
 ```
 
-詳細は[ROS 2 Jazzy / Nav2ビルド検証](docker/nav2-jazzy/README.md)を参照してください。
+詳細は[ROS 2 LyricalおよびJazzy / Nav2ビルド検証](docker/nav2/README.md)を参照してください。
 checkoutはread-onlyでmountされ、ビルド生成物は一時コンテナ内だけに残ります。
 
 最小構成例です。車体寸法、制動能力、後方視野は実機に合わせて変更してください。
@@ -314,7 +320,7 @@ costmapやスキャンがBACに届く前に、画像の帯をクロップし、�
 - [パラメータリファレンス](docs/parameters.md)
 - [既存手法との比較と評価](docs/method_comparison.md)
 - [BACアブレーションと公平条件比較](docs/ablation_and_matched_evaluation.md)
-- [ROS 2 Jazzy / Nav2ビルド検証](docker/nav2-jazzy/README.md)
+- [ROS 2 LyricalおよびJazzy / Nav2ビルド検証](docker/nav2/README.md)
 - [再現可能なGazebo evidence](examples/gazebo/README.md)
 - [リリースレビュー履歴](docs/release_review_history.md)
 - [Public 公開準備チェックリスト](docs/public_release_checklist.md)

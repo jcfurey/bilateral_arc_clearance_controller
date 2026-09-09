@@ -25,11 +25,21 @@
   <depend condition="$ROS_DISTRO != ''">sensor_msgs</depend>
   <depend condition="$ROS_DISTRO != ''">std_msgs</depend>
   <depend condition="$ROS_DISTRO != ''">nav2_core</depend>
+  <!-- Build-only: find_package(nav2_core) loads nav2_behavior_tree's CMake
+       config, and from Nav2 1.5 that config find_package()s nav2_common,
+       which the binary packages do not pull in at run time. Without this
+       line a rosdep-resolved Lyrical workspace fails to configure. -->
+  <build_depend condition="$ROS_DISTRO != ''">nav2_common</build_depend>
   <depend condition="$ROS_DISTRO != ''">nav2_costmap_2d</depend>
   <depend condition="$ROS_DISTRO != ''">nav2_util</depend>
   <depend condition="$ROS_DISTRO != ''">pluginlib</depend>
   <depend condition="$ROS_DISTRO != ''">tf2</depend>
   <depend condition="$ROS_DISTRO != ''">tf2_geometry_msgs</depend>
+  <depend condition="$ROS_DISTRO != ''">tf2_ros</depend>
+  <!-- nav2::LifecycleNode and nav2::TransformBuffer, which the Nav2 1.5
+       (ROS 2 Lyrical) controller interface names; the package did not exist
+       before Kilted. -->
+  <depend condition="$ROS_DISTRO != '' and $ROS_DISTRO != 'humble' and $ROS_DISTRO != 'iron' and $ROS_DISTRO != 'jazzy'">nav2_ros_common</depend>
   <exec_depend condition="$ROS_DISTRO != ''">ament_index_python</exec_depend>
   <exec_depend condition="$ROS_DISTRO != ''">launch</exec_depend>
   <exec_depend condition="$ROS_DISTRO != ''">launch_ros</exec_depend>

@@ -4,6 +4,28 @@ Changelog for package bilateral_arc_clearance_controller
 
 Forthcoming
 -----------
+* Build and test on ROS 2 Lyrical (Nav2 1.5) alongside ROS 2 Jazzy (Nav2
+  1.3). Nav2 1.5 changed the ``nav2_core::Controller`` interface - the parent
+  node is a ``nav2::LifecycleNode``, ``setPlan()`` became
+  ``newPathReceived()``, and ``computeVelocityCommands()`` also receives the
+  controller server's transformed plan and the goal - and the plugin now
+  implements both, selected at build time from the installed ``nav2_core``
+  version (``BAC_NAV2_API`` overrides the detection). The plan handling is the
+  same under both: the plugin keeps the raw global plan, transforms it through
+  TF and prunes it to ``max_range`` itself, and does not consume the path
+  handler's plan; the Nav2 integration guide states why. ROS 2 Kilted (Nav2
+  1.4) shares the Jazzy interface and is expected to build, but is not part of
+  CI.
+* Link ROS dependencies as the CMake targets their packages export instead of
+  through ``ament_target_dependencies()``, which is deprecated from Kilted and
+  no longer defined by ``find_package(ament_cmake)`` in Lyrical. Include the
+  ``.hpp`` tf2 headers; the ``.h`` ones are gone in Lyrical. Declare ``tf2_ros``
+  and, on distributions that ship it, ``nav2_ros_common`` in the manifest.
+* Generalise the Docker verification harness from ``docker/nav2-jazzy`` to
+  ``docker/nav2``, taking the ROS 2 distribution as an argument (Lyrical by
+  default, ``jazzy`` on request), and run the hosted CI's ROS job on both. The
+  harness additionally starts the installed ``bac_filter.launch.py`` on the
+  distribution's Python (3.14 on Lyrical).
 * Generalise the DIRECTION OF TRAVEL through the whole controller, not just the
   geometry. The candidate stopping test, the contact horizon, the braking
   margin, the emergency zone and its escape gate, and the deceleration ramp all
