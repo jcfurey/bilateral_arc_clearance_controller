@@ -88,6 +88,29 @@ void spinFor(rclcpp::executors::SingleThreadedExecutor &executor,
   }
 }
 
+/// A costmap whose configure step returns only once its executor thread is
+/// spinning. Costmap2DROS stops that thread on cleanup through Nav2's
+/// NodeThread, which calls Executor::cancel() and joins; cancel() only ends a
+/// spin already running, so cleaning up before the thread reaches spin() (a
+/// loaded machine, and these fixtures clean up within milliseconds) joins a
+/// thread that never returns.
+class SpinningCostmap : public nav2_costmap_2d::Costmap2DROS
+{
+public:
+  using nav2_costmap_2d::Costmap2DROS::Costmap2DROS;
+
+  void configureAndWaitForSpin()
+  {
+    configure();
+    const auto deadline = std::chrono::steady_clock::now() + 30s;
+    while (!(executor_ && executor_->is_spinning()) &&
+           std::chrono::steady_clock::now() < deadline)
+    {
+      std::this_thread::sleep_for(1ms);
+    }
+  }
+};
+
 nav_msgs::msg::Path straightPlan(const std::string &frame)
 {
   nav_msgs::msg::Path path;
@@ -158,8 +181,8 @@ void testControllerAdapter()
     rclcpp::Parameter("height", 4),
     rclcpp::Parameter("resolution", 0.1)
   });
-  auto costmap = std::make_shared<nav2_costmap_2d::Costmap2DROS>(costmap_options);
-  costmap->configure();
+  auto costmap = std::make_shared<SpinningCostmap>(costmap_options);
+  costmap->configureAndWaitForSpin();
   auto tf = std::make_shared<bac::Nav2TfBuffer>(parent->get_clock());
 
   bac::BacController controller;
@@ -270,6 +293,17 @@ void testControllerAdapter()
              diagnosticValue(last_diagnostic, "scan_state") == "insufficient_valid_rays",
          "invalid scan falls back with an explicit reason");
 
+  // Parameters are read at configure. While active, a change would be
+  // accepted and ignored, so it is refused; parameters outside the plugin's
+  // prefix are none of its business.
+  parent->declare_parameter("unrelated_value", 1.0);
+  const auto refused = parent->set_parameter(rclcpp::Parameter("FollowPath.limits.v_max", 0.1));
+  expect(!refused.successful, "an active controller refuses a change to its own parameter");
+  expect(refused.reason.find("FollowPath.limits.v_max") != std::string::npos,
+         "the refusal names the parameter");
+  expect(parent->set_parameter(rclcpp::Parameter("unrelated_value", 2.0)).successful,
+         "a parameter outside the plugin's prefix is left alone");
+
   nav_msgs::msg::Path unavailable_plan = straightPlan("unavailable_frame");
   givePlan(controller, unavailable_plan);
   bool threw_tf_error = false;
@@ -284,6 +318,8 @@ void testControllerAdapter()
   expect(threw_tf_error, "unavailable plan transform raises ControllerTFError");
 
   controller.deactivate();
+  expect(parent->set_parameter(rclcpp::Parameter("FollowPath.limits.v_max", 0.3)).successful,
+         "a deactivated controller accepts the change the next configure will read");
   controller.cleanup();
   costmap->cleanup();
   executor.remove_node(parent->get_node_base_interface());
@@ -319,8 +355,8 @@ void testAckermannAdapterConfiguration()
   // A distinct node name keeps this costmap's parameters and topics separate
   // from the default-configuration test's.
   costmap_options.arguments({ "--ros-args", "-r", "__node:=ackermann_costmap" });
-  auto costmap = std::make_shared<nav2_costmap_2d::Costmap2DROS>(costmap_options);
-  costmap->configure();
+  auto costmap = std::make_shared<SpinningCostmap>(costmap_options);
+  costmap->configureAndWaitForSpin();
   auto tf = std::make_shared<bac::Nav2TfBuffer>(parent->get_clock());
 
   bac::BacController controller;
@@ -368,8 +404,8 @@ void testPlanYawAdapterConfiguration()
     rclcpp::Parameter("resolution", 0.1)
   });
   costmap_options.arguments({ "--ros-args", "-r", "__node:=plan_yaw_costmap" });
-  auto costmap = std::make_shared<nav2_costmap_2d::Costmap2DROS>(costmap_options);
-  costmap->configure();
+  auto costmap = std::make_shared<SpinningCostmap>(costmap_options);
+  costmap->configureAndWaitForSpin();
 
   // Handing the orientation to the plan is meaningless for a model that
   // steers with yaw, and silently ignoring the request would leave the user
@@ -461,6 +497,160 @@ void testPlanYawAdapterConfiguration()
   costmap->cleanup();
 }
 
+/// The lifecycle reconfigure path (deactivate, cleanup, change, configure,
+/// activate) must apply the new value, reset() must start the next task
+/// clean, and the Nav2 speed limit must bound reverse speed and turning, not
+/// only forward speed.
+void testReconfigureAndSpeedLimit()
+{
+  rclcpp::NodeOptions costmap_options;
+  costmap_options.parameter_overrides({
+    rclcpp::Parameter("plugins", std::vector<std::string>{}),
+    rclcpp::Parameter("global_frame", "odom"),
+    rclcpp::Parameter("robot_base_frame", "base_link"),
+    rclcpp::Parameter("rolling_window", true),
+    rclcpp::Parameter("width", 4),
+    rclcpp::Parameter("height", 4),
+    rclcpp::Parameter("resolution", 0.1)
+  });
+  costmap_options.arguments({ "--ros-args", "-r", "__node:=reconfigure_costmap" });
+  auto costmap = std::make_shared<SpinningCostmap>(costmap_options);
+  costmap->configureAndWaitForSpin();
+
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+    rclcpp::Parameter("FollowPath.motion_model.type", "omni"),
+    rclcpp::Parameter("FollowPath.limits.vy_max", 0.3),
+    rclcpp::Parameter("FollowPath.limits.v_min", 0.0),
+    rclcpp::Parameter("FollowPath.plan_yaw_mode", "plan"),
+  });
+  auto parent = std::make_shared<bac::Nav2Node>("bac_reconfigure_test", options);
+  auto tf = std::make_shared<bac::Nav2TfBuffer>(parent->get_clock());
+  bac::BacController controller;
+  // The controller server hands over the pose in the costmap's global frame.
+  geometry_msgs::msg::PoseStamped robot_pose;
+  robot_pose.header.frame_id = "odom";
+  robot_pose.pose.orientation.w = 1.0;
+  geometry_msgs::msg::Twist velocity;
+  const nav_msgs::msg::Path side_plan = sidePlanHoldingYaw("base_link");
+
+  controller.configure(parent, "FollowPath", tf, costmap);
+  controller.activate();
+  givePlan(controller, side_plan);
+  const geometry_msgs::msg::TwistStamped crab = tick(controller, robot_pose, velocity, side_plan);
+  expect(crab.twist.angular.z == 0.0 && crab.twist.linear.y > 0.0,
+         "configured with plan_yaw_mode 'plan', the side plan is crabbed");
+  expect(crab.header.frame_id == "base_link",
+         "the command is expressed in the base frame, got '" + crab.header.frame_id + "'");
+
+  controller.deactivate();
+  controller.cleanup();
+  expect(parent->set_parameter(rclcpp::Parameter("FollowPath.plan_yaw_mode", "off")).successful,
+         "an unconfigured controller's parameters can be changed");
+  controller.configure(parent, "FollowPath", tf, costmap);
+  controller.activate();
+  givePlan(controller, side_plan);
+  const geometry_msgs::msg::TwistStamped turn = tick(controller, robot_pose, velocity, side_plan);
+  expect(std::fabs(turn.twist.angular.z) > 0.0,
+         "after reconfiguring to 'off' the same plan is turned onto, not crabbed (" +
+             std::to_string(turn.twist.angular.z) + " rad/s)");
+
+  // Goal exit: the controller server calls reset(); the next task starts clean.
+  controller.reset();
+  const geometry_msgs::msg::TwistStamped after_reset =
+      tick(controller, robot_pose, velocity, side_plan);
+  expect(after_reset.twist.angular.z == turn.twist.angular.z &&
+             after_reset.twist.linear.x == turn.twist.linear.x,
+         "after reset() the controller answers the first tick of a task as it did after activate()");
+
+  controller.deactivate();
+  controller.cleanup();
+
+  // The Nav2 speed limit bounds the speed in every direction. Capping
+  // limits.v_max alone left reverse at limits.v_min: a differential-drive (or
+  // Ackermann) base configured for reverse backed up at its full reverse speed
+  // inside a speed zone. The fixture makes reverse the only way out: at a
+  // standstill with an obstacle cell inside the front stopping margin, the
+  // core offers only an escape away from it. An absolute limit of 0.01 m/s is
+  // 2.5 % of limits.v_max (0.4), so every translational bound scales to 2.5 %
+  // and the escape may not exceed it (stopping instead is within the limit);
+  // with limits.v_min unscaled the escape backed away at 0.1 m/s.
+  // (The holonomic model's admissibility test already bounds its speed norm
+  // by limits.v_max; lateral speed is scaled with the rest for the same
+  // reason.)
+  {
+    unsigned int mx = 0, my = 0;
+    const bool in_map = costmap->getCostmap()->worldToMap(0.55, 0.05, mx, my);
+    expect(in_map, "the speed-limit fixture's obstacle cell lies inside the costmap");
+    costmap->getCostmap()->setCost(mx, my, nav2_costmap_2d::LETHAL_OBSTACLE);
+
+    rclcpp::NodeOptions reverse_options;
+    reverse_options.parameter_overrides({
+      rclcpp::Parameter("FollowPath.limits.v_min", -0.3),
+    });
+    auto reverse_parent =
+        std::make_shared<bac::Nav2Node>("bac_speed_limit_test", reverse_options);
+    auto reverse_tf = std::make_shared<bac::Nav2TfBuffer>(reverse_parent->get_clock());
+    bac::BacController limited;
+    limited.configure(reverse_parent, "FollowPath", reverse_tf, costmap);
+    limited.activate();
+    const nav_msgs::msg::Path ahead = straightPlan("base_link");
+    givePlan(limited, ahead);
+    const geometry_msgs::msg::Twist standstill;
+
+    const geometry_msgs::msg::TwistStamped free = tick(limited, robot_pose, standstill, ahead);
+    expect(free.twist.linear.x < -0.02,
+           "without a speed limit the fixture escapes in reverse (" +
+               std::to_string(free.twist.linear.x) + " m/s)");
+
+    limited.setSpeedLimit(0.01, false);
+    limited.reset();
+    const geometry_msgs::msg::TwistStamped slow = tick(limited, robot_pose, standstill, ahead);
+    expect(std::fabs(slow.twist.linear.x) <= 0.01 + 1e-6,
+           "a 0.01 m/s Nav2 speed limit holds in reverse (" +
+               std::to_string(slow.twist.linear.x) + " m/s)");
+
+    limited.setSpeedLimit(5.0, true);
+    limited.reset();
+    const geometry_msgs::msg::TwistStamped percent = tick(limited, robot_pose, standstill, ahead);
+    expect(std::fabs(percent.twist.linear.x) <= 0.02 + 1e-6,
+           "a 5 % Nav2 speed limit (0.02 m/s) holds in reverse (" +
+               std::to_string(percent.twist.linear.x) + " m/s)");
+
+    limited.setSpeedLimit(0.0, false);  // nav2_costmap_2d::NO_SPEED_LIMIT
+    limited.reset();
+    const geometry_msgs::msg::TwistStamped restored = tick(limited, robot_pose, standstill, ahead);
+    expect(restored.twist.linear.x == free.twist.linear.x &&
+               restored.twist.angular.z == free.twist.angular.z,
+           "removing the speed limit restores the configured bounds exactly");
+
+    // Turning slows with the rest, as in MPPI and DWB. Without the obstacle a
+    // rear plan is turned onto on the spot; under the same 2.5 % limit the yaw
+    // rate may not exceed 2.5 % of limits.w_max (0.025 rad/s, still above the
+    // angvel_min deadband, so the robot keeps turning, only slower).
+    costmap->getCostmap()->setCost(mx, my, nav2_costmap_2d::FREE_SPACE);
+    const nav_msgs::msg::Path behind = rearPlan("base_link");
+    givePlan(limited, behind);
+    limited.setSpeedLimit(0.0, false);
+    limited.reset();
+    const geometry_msgs::msg::TwistStamped free_turn = tick(limited, robot_pose, standstill, behind);
+    expect(std::fabs(free_turn.twist.angular.z) > 0.05,
+           "without a speed limit a rear plan is turned onto (" +
+               std::to_string(free_turn.twist.angular.z) + " rad/s)");
+    limited.setSpeedLimit(0.01, false);
+    limited.reset();
+    const geometry_msgs::msg::TwistStamped slow_turn = tick(limited, robot_pose, standstill, behind);
+    expect(std::fabs(slow_turn.twist.angular.z) > 0.0 &&
+               std::fabs(slow_turn.twist.angular.z) <= 0.025 + 1e-6,
+           "a 0.01 m/s Nav2 speed limit slows turning to 2.5 % of limits.w_max (" +
+               std::to_string(slow_turn.twist.angular.z) + " rad/s)");
+
+    limited.deactivate();
+    limited.cleanup();
+  }
+  costmap->cleanup();
+}
+
 }  // namespace
 
 int main(int argc, char **argv)
@@ -469,6 +659,7 @@ int main(int argc, char **argv)
   testControllerAdapter();
   testAckermannAdapterConfiguration();
   testPlanYawAdapterConfiguration();
+  testReconfigureAndSpeedLimit();
   rclcpp::shutdown();
 
   if (failures != 0)

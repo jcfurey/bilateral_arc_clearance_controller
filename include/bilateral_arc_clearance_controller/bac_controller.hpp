@@ -34,6 +34,7 @@
 #ifndef BILATERAL_ARC_CLEARANCE_CONTROLLER__BAC_CONTROLLER_HPP_
 #define BILATERAL_ARC_CLEARANCE_CONTROLLER__BAC_CONTROLLER_HPP_
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -101,7 +102,20 @@ public:
                                                            nav2_core::GoalChecker *goal_checker) override;
 #endif
 
+  /// Nav2 speed limit (Speed Filter, speed zones). Scales every velocity
+  /// limit - forward, reverse, lateral and yaw rate - by one ratio, the way
+  /// the MPPI and DWB controllers do, so a zone slows the robot in every
+  /// direction it can move, turning included, and keeps the curvature it can
+  /// drive. 0 (nav2_costmap_2d::NO_SPEED_LIMIT) or 100 % removes it. Called
+  /// from the controller server's executor thread, concurrently with
+  /// computeVelocityCommands().
   void setSpeedLimit(const double &speed_limit, const bool &percentage) override;
+
+  /// Called by the controller server when a task exits (succeeded, cancelled
+  /// or aborted): clears the core's temporal state - the AVOIDING latch,
+  /// candidate hysteresis and the previous output - so the next task starts
+  /// from the same state activate() leaves.
+  void reset() override;
 
 private:
   /// The one plan entry point behind setPlan() and newPathReceived()
@@ -134,6 +148,13 @@ private:
   /// Publish the active obstacle source and selected-candidate diagnostics
   void publishDiagnostics(const Result &result, bool using_scan);
 
+  /// Reject live changes to this plugin's parameters while it is active: they
+  /// are read in configure(), and a change accepted there would be silently
+  /// ignored. Inactive (between cleanup and configure) they are accepted, so
+  /// the lifecycle reconfigure path keeps working.
+  rcl_interfaces::msg::SetParametersResult
+  onSetParameters(const std::vector<rclcpp::Parameter> &parameters) const;
+
   Nav2Node::WeakPtr                              parent_;
   std::string                                    name_;
   std::shared_ptr<Nav2TfBuffer>                  tf_;
@@ -158,10 +179,17 @@ private:
   float        diagnostics_publish_period_ = 1.0f;  // [s]
   rclcpp::Time last_diagnostics_time_{ 0, 0, RCL_ROS_TIME };
 
+  rclcpp::Logger logger_{ rclcpp::get_logger("BacController") };
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
+  std::atomic<bool> active_{ false };
+
   BacCore core_;
 
-  float base_v_max_  = 0.4f;  // configured limits.v_max (speed limit re-caps it)
-  float speed_limit_ = 0.0f;  // 0 = unlimited
+  /// Configured velocity limits; the speed limit scales these.
+  Limits base_limits_;
+  /// Speed-limit ratio in (0, 1]; 1 = unlimited. Written by setSpeedLimit()
+  /// on the executor thread, read by computeVelocityCommands().
+  std::atomic<float> speed_ratio_{ 1.0f };
 
   /// plan_yaw_mode "plan": hand the plan's per-pose orientations to the core,
   /// so the plan owns the body orientation instead of the path tangent.

@@ -54,6 +54,25 @@ circumscribedDiskFree(const Footprint &body, const std::vector<Point2D> &points)
 void
 validateMotionModelParams(const Params &params)
 {
+  // Bounds every model needs. The sample counts size vectors and enter
+  // `2 * n` and `n + 1` in int arithmetic: an absurd value overflowed (UB)
+  // and then made process() throw from reserve(). 1000 is far above any
+  // useful lattice (the defaults are 5, 25, 15 and 3).
+  constexpr int kMaxSamples = 1000;
+  if (params.v_samples > kMaxSamples || params.w_samples > kMaxSamples ||
+      params.vy_samples > kMaxSamples || params.w_refine_steps > kMaxSamples)
+  {
+    throw std::invalid_argument(
+        "bac: v_samples, w_samples, vy_samples and w_refine_steps must not exceed 1000");
+  }
+  if (!(params.sim_time > 0.0f) || !std::isfinite(params.sim_time))
+  {
+    throw std::invalid_argument("bac: sim_time must be positive and finite");
+  }
+  if (!(params.control_period > 0.0f) || !std::isfinite(params.control_period))
+  {
+    throw std::invalid_argument("bac: control_period must be positive and finite");
+  }
   switch (params.motion_model.type)
   {
     case MotionModelType::DIFF_DRIVE:

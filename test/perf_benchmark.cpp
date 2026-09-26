@@ -48,13 +48,21 @@ main(int argc, char **argv)
   {
     bac::BacCore core;
 
-    // Corridor walls plus scattered clutter, resampled to n_points.
+    // Two corridor walls of n_points / 2 each, each wall contiguous - the
+    // order a scan delivers them in. Interleaving left and right points made
+    // the uniform stride that decimates inputs above max_points keep only
+    // the left wall at strides 2 and 4, so the 2000- and 4000-point rows
+    // timed a one-walled corridor and read faster than the 1000-point row.
     std::vector<bac::Point2D> points;
     const int per_side = n_points / 2;
     for (int i = 0; i < per_side; i++)
     {
       const float x = -2.0f + 10.0f * static_cast<float>(i) / per_side;
       points.emplace_back(x, 0.9f + 0.02f * ((i * 7) % 5));
+    }
+    for (int i = 0; i < per_side; i++)
+    {
+      const float x = -2.0f + 10.0f * static_cast<float>(i) / per_side;
       points.emplace_back(x, -0.9f - 0.02f * ((i * 3) % 5));
     }
     std::vector<bac::Point2D> path;

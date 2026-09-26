@@ -18,6 +18,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend condition="$ROS_DISTRO != ''">rclcpp</depend>
+  <depend condition="$ROS_DISTRO != ''">rclcpp_components</depend>
   <depend condition="$ROS_DISTRO != ''">rclcpp_lifecycle</depend>
   <depend condition="$ROS_DISTRO != ''">geometry_msgs</depend>
   <depend condition="$ROS_DISTRO != ''">diagnostic_msgs</depend>
@@ -40,6 +41,7 @@
        (ROS 2 Lyrical) controller interface names; the package did not exist
        before Kilted. -->
   <depend condition="$ROS_DISTRO != '' and $ROS_DISTRO != 'humble' and $ROS_DISTRO != 'iron' and $ROS_DISTRO != 'jazzy'">nav2_ros_common</depend>
+  <test_depend condition="$ROS_DISTRO != ''">rosgraph_msgs</test_depend>
   <exec_depend condition="$ROS_DISTRO != ''">ament_index_python</exec_depend>
   <exec_depend condition="$ROS_DISTRO != ''">launch</exec_depend>
   <exec_depend condition="$ROS_DISTRO != ''">launch_ros</exec_depend>

@@ -136,7 +136,9 @@ goalHeadingInBase(const Point2D &plan_end, const std::vector<Point2D> &local_pat
                             transform_y + sn * plan_end.x + cs * plan_end.y);
   const float dx = end_in_base.x - local_path.back().x;
   const float dy = end_in_base.y - local_path.back().y;
-  if (std::sqrt(dx * dx + dy * dy) >= 1e-3f)
+  // Written so a NaN distance fails closed: `>= 1e-3f` is false for NaN and
+  // passed a heading on for a plan end that could not be located.
+  if (!(std::sqrt(dx * dx + dy * dy) < 1e-3f))
   {
     return std::nullopt;  // the plan end was pruned away; this is a waypoint
   }

@@ -180,6 +180,15 @@ testGoalHeadingInBase()
     const auto heading = bac::goalHeadingInBase(plan_end, {}, 0.0f, 0.0f, 0.0f, 0.7f);
     expect(!heading.has_value(), "an empty path yields no goal heading");
   }
+
+  {
+    // `distance >= 1e-3` is false for NaN, so a plan end that could not be
+    // located used to pass its orientation on as the goal heading.
+    const std::vector<bac::Point2D> local_path = { { 1.0f, 0.0f } };
+    const bac::Point2D lost_end(std::numeric_limits<float>::quiet_NaN(), 0.0f);
+    const auto heading = bac::goalHeadingInBase(lost_end, local_path, 0.0f, 0.0f, 0.0f, 0.7f);
+    expect(!heading.has_value(), "a plan end that cannot be located yields no goal heading");
+  }
 }
 
 }  // namespace

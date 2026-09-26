@@ -89,8 +89,18 @@ Nav2 1.5では`nav2_core::Controller`インターフェースが変わった。�
 2.0 m）で切られているため、それに従うと本パッケージが文書化も計測もしていないController Serverの
 パラメータがcoreの見るpathの長さを決めてしまう。path handlerはController Server内で引き続き動作し
 `transformed_global_plan`を配信するが、そのtopicが示すのはhandlerの窓であり、BACが評価する窓ではない。
-タスク終了時にController Serverが呼ぶ`reset()`はインターフェースの既定（何もしない）のままなので、
-タスク間のcoreの状態はJazzyと同じである。
+
+**Controller Serverからの呼び出しは両インターフェースで同じに扱う。** タスク終了時（成功・キャンセル・
+失敗のいずれでも）にController Serverが呼ぶ`reset()`は、coreの時間的な状態、すなわち`AVOIDING`の
+ラッチ、前回選んだ指令、平滑化した速度cap、整列モードをクリアする。次のgoalは前タスクのラッチを
+引き継がず、activate直後と同じ状態から始まる。Speed Filterなどの`speed_limit`配信から呼ばれる
+`setSpeedLimit()`は、MPPIやDWBと同じく全ての速度上限（`limits.v_max`、`limits.v_min`、`limits.vy_max`、
+ヨーレートの`limits.w_max`）を一つの比率で縮める。百分率はそのまま、絶対値は`limits.v_max`に対する比
+として扱う。したがって速度制限区域では走行と同じ割合で旋回（その場回頭を含む）も遅くなり、走行できる
+曲率は変わらない。`0`（`NO_SPEED_LIMIT`）または100 %で設定値に戻り、設定値を超える制限で上限が上がる
+ことはない。負または非有限の制限は警告して無視する。上限を出力の不感帯（`velocity_min`、`angvel_min`）
+未満まで縮める強い制限では、その運動は止まる。既定値（`limits.w_max` 1.0 rad/s、`angvel_min` 0.01 rad/s）
+では、`limits.v_max`の1 %未満の制限で差動二輪と全方向モデルの旋回は0に丸められる。
 
 ## Ackermann指令contract
 
@@ -198,8 +208,13 @@ ros2 run bilateral_arc_clearance_controller bac_filter_node \
 install済みの例は次のようにも起動できる。
 
 ```bash
-ros2 launch bilateral_arc_clearance_controller bac_filter.launch.py
+ros2 launch bilateral_arc_clearance_controller bac_filter.launch.py use_sim_time:=false
 ```
+
+このnodeはcomposable node `bac::BacFilterNode`でもあり、入力を配信するnodeと同じcomponent containerに
+loadできる。tickはnode clockで`control_period`ごとに走り、`use_sim_time`下では`/clock`に従う。
+2つのcmd_vel topicの型はそのディストリビューションのNav2に合わせ、Jazzyまでは`geometry_msgs/Twist`、
+Kilted以降は`TwistStamped`である。`enable_stamped_cmd_vel`で上書きできる。
 
 障害物が`influence_range`外なら入力を透過し、`AVOIDING`ではcore出力を使い、scanまたはodom途絶時は
 停止する。`avoid_status`は`0=CLEAR`、`1=AVOIDING`、`2=STOP`である。

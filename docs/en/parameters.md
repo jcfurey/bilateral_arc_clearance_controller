@@ -5,6 +5,11 @@ English | [日本語](../parameters.md)
 `bac_filter_node` and `bac::BacController` expose the core parameters below with the same names. In the Nav2
 plugin, prefix them with the plugin namespace, for example `FollowPath.`. All units are SI.
 
+Both components read their parameters once: the filter node when it starts, the Nav2 plugin when the Controller
+Server configures it. A runtime change (`ros2 param set`) that would be accepted and then ignored is refused
+instead, with the reason in the response. For the filter node, restart it; for the Nav2 plugin, deactivate, clean
+up and configure the Controller Server, which accepts the change while the plugin is inactive.
+
 ## Footprint and margins
 
 | Parameter | Default | Description |
@@ -124,7 +129,7 @@ sensor coverage abeam the body** — the same caveat `limits.v_min` carries for 
 | `limits.w_max` | 1.0 | Maximum absolute angular velocity [rad/s] |
 | `limits.acc_v` | 0.8 | Linear acceleration used by the dynamic window [m/s²] |
 | `limits.acc_w` | 2.5 | Physical body yaw acceleration used to limit the output yaw rate; 0 disables it [rad/s²] |
-| `control_period` | 0.05 | Control cycle assumed by the yaw-rate output limit [s] |
+| `control_period` | 0.05 | Control cycle assumed by the yaw-rate output limit [s]; also the filter node's tick period |
 | `window_time` | 0.25 | Time span of the linear dynamic window [s] |
 | `v_samples` | 5 | Number of linear-velocity samples; the stop row is added separately, the rotation row only for `diff_drive` |
 | `w_samples` | 25 | Number of coarse yaw-rate samples for differential drive or body-curvature samples for Ackermann |
@@ -213,12 +218,15 @@ Always re-run `bac_scenario_harness --strict` after changing weights. In particu
 | `costmap_margin_compensation` | Nav2 | automatic | Compensation for cell-center quantization [m] |
 | `plan_yaw_mode` | Nav2 | `"off"` | `omni` only. `"plan"` hands the pose reference to the plan's pose orientations (replacing tangent following; see the end of [Motion model](#motion-model)). Any other model, or an unknown value, fails configure. Quote the value: bare `off` is a YAML 1.1 boolean |
 | `diagnostics_publish_period` | Nav2 | 1.0 | Period for standard `diagnostics` messages; non-positive disables publication [s] |
+| `enable_stamped_cmd_vel` | filter | distribution | `geometry_msgs/TwistStamped` instead of `Twist` on both `cmd_vel_in` and `cmd_vel_out`. The default follows the distribution's Nav2: `false` through Jazzy, `true` from Kilted on. The stamped output keeps the input's `frame_id` |
 | `sensor.x/y/yaw` | filter | 0 | Fixed 2D extrinsics of the LaserScan frame |
 | `virtual_path_length` | filter | 3.0 | Length of the virtual path created from input `cmd_vel` [m] |
 
-The filter node does not use TF, so set `sensor.*` for the physical installation. The Nav2 plugin transforms
-LaserScan data into the base frame using TF. Its standard `diagnostics` output reports `raw_scan`, `costmap`, or
-`costmap_fallback`, the scan fallback reason, BAC status, candidate counts, and selected-candidate clearance.
+The filter node does not use TF, so set `sensor.*` for the physical installation. It ticks every `control_period`
+on the node clock, so under `use_sim_time` both the tick and the freshness timeouts follow `/clock`. The Nav2
+plugin transforms LaserScan data into the base frame using TF. Its standard `/diagnostics` output reports
+`raw_scan`, `costmap`, or `costmap_fallback`, the scan fallback reason, BAC status, candidate counts, and
+selected-candidate clearance.
 
 ## Internal constants not exposed as ROS parameters
 
