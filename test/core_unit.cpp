@@ -11,6 +11,7 @@
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -477,6 +478,129 @@ testPlanYawIgnoredWhenItCannotBeTrusted()
          "a differential-drive model ignores a commanded orientation");
 }
 
+/// Inputs that are not numbers - broken odometry, a corrupt plan, a NaN in
+/// a point cloud - must neither hang process(), nor release the brake, nor
+/// steer the robot.
+void
+testNonFiniteInputs()
+{
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  std::vector<bac::Point2D> path;
+  for (int i = 1; i <= 40; ++i)
+  {
+    path.emplace_back(0.1f * static_cast<float>(i), 0.0f);
+  }
+
+  // Velocity feedback that is not a number has no braking distance: every
+  // speed test was false, the emergency brake was skipped and the window
+  // widened to the full speed range (v_max from a standstill).
+  {
+    bac::BacCore core;
+    const bac::Result r = core.process({}, path, bac::Twist2D(nan, 0.0f));
+    expect(r.status == bac::Status::STOP && r.output.v == 0.0f && r.output.w == 0.0f,
+           "NaN velocity feedback stops the robot");
+  }
+
+  // A NaN point failed every proximity comparison and read as touching the
+  // body: STOP while moving, a NaN-steered escape at a standstill.
+  for (const float speed : { 0.3f, 0.0f })
+  {
+    const std::vector<bac::Point2D> clean = { { 5.0f, 3.0f } };
+    const std::vector<bac::Point2D> dirty = { clean.front(), { nan, 0.0f }, { 0.0f, nan } };
+    bac::BacCore a, b;
+    const bac::Result ra = a.process(clean, path, bac::Twist2D(speed, 0.0f));
+    const bac::Result rb = b.process(dirty, path, bac::Twist2D(speed, 0.0f));
+    expect(ra.status == rb.status && ra.output.v == rb.output.v && ra.output.w == rb.output.w,
+           "NaN obstacle points are ignored, not read as a contact (current v " +
+               std::to_string(speed) + ")");
+  }
+
+  // wrapAngle never terminated on +/-inf, nor on |a| above ~1.3e8. A
+  // regression here hangs; ctest's TIMEOUT on this suite turns that into a
+  // failure.
+  bac::Params omni;
+  omni.motion_model.type = bac::MotionModelType::OMNI;
+  omni.limits.vy_max     = 0.3f;
+  {
+    bac::BacCore with_inf(omni), without(omni);
+    const bac::Result r_inf  = with_inf.process({}, path, bac::Twist2D{}, inf);
+    const bac::Result r_none = without.process({}, path, bac::Twist2D{});
+    expect(r_inf.output.v == r_none.output.v && r_inf.output.w == r_none.output.w &&
+               r_inf.output.vy == r_none.output.vy,
+           "an infinite goal heading is treated as absent");
+  }
+  {
+    bac::BacCore core(omni);
+    const bac::Result r = core.process({}, path, bac::Twist2D{}, 3.0e8f);
+    expect(std::isfinite(r.output.w), "a huge finite goal heading wraps instead of hanging");
+  }
+  {
+    std::vector<float> yaw(path.size(), 0.0f);
+    yaw[3] = inf;
+    bac::BacCore with_inf(omni), without(omni);
+    const bac::Result r_inf  = with_inf.process({}, path, bac::Twist2D{}, std::nullopt, yaw);
+    const bac::Result r_none = without.process({}, path, bac::Twist2D{});
+    expect(r_inf.output.v == r_none.output.v && r_inf.output.w == r_none.output.w &&
+               r_inf.output.vy == r_none.output.vy,
+           "a plan orientation sequence with an infinite entry is treated as absent");
+  }
+  {
+    bac::Params long_horizon;
+    long_horizon.sim_time = 1.0e9f;
+    bac::BacCore core(long_horizon);
+    const bac::Result r = core.process({}, path, bac::Twist2D(0.2f, 0.0f));
+    expect(std::isfinite(r.output.v) && std::isfinite(r.output.w),
+           "a huge sim_time does not hang the heading evaluation");
+  }
+}
+
+/// Values the lattice cannot be built from are refused by setParams(), not
+/// met by process(): an absurd sample count overflowed int arithmetic and
+/// then threw from reserve() inside process().
+void
+testConfigurationBounds()
+{
+  auto refused = [](const bac::Params &params) {
+    bac::BacCore core;
+    try
+    {
+      core.setParams(params);
+    }
+    catch (const std::invalid_argument &)
+    {
+      return core.params().w_samples == bac::Params().w_samples;
+    }
+    return false;
+  };
+  bac::Params p;
+  p.w_samples = std::numeric_limits<int>::max();
+  expect(refused(p), "an absurd w_samples is refused and the previous configuration kept");
+  p = bac::Params();
+  p.w_refine_steps = 1 << 30;
+  expect(refused(p), "an absurd w_refine_steps is refused");
+  p = bac::Params();
+  p.sim_time = std::numeric_limits<float>::infinity();
+  expect(refused(p), "a non-finite sim_time is refused");
+  p = bac::Params();
+  p.control_period = 0.0f;
+  expect(refused(p), "a zero control_period is refused");
+  p = bac::Params();
+  p.w_samples = 1000;
+  p.w_refine_steps = 1000;
+  bac::BacCore core;
+  bool accepted = true;
+  try
+  {
+    core.setParams(p);
+  }
+  catch (const std::invalid_argument &)
+  {
+    accepted = false;
+  }
+  expect(accepted, "the largest allowed sample counts are accepted");
+}
+
 }  // namespace
 
 int
@@ -494,6 +618,8 @@ main()
   testPlanYawHoldsOrientation();
   testPlanYawInterpolatesTheShortWayRound();
   testPlanYawIgnoredWhenItCannotBeTrusted();
+  testNonFiniteInputs();
+  testConfigurationBounds();
 
   if (failures != 0)
   {

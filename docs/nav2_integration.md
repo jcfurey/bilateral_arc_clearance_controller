@@ -89,8 +89,16 @@ Nav2 1.5では`nav2_core::Controller`インターフェースが変わった。�
 2.0 m）で切られているため、それに従うと本パッケージが文書化も計測もしていないController Serverの
 パラメータがcoreの見るpathの長さを決めてしまう。path handlerはController Server内で引き続き動作し
 `transformed_global_plan`を配信するが、そのtopicが示すのはhandlerの窓であり、BACが評価する窓ではない。
-タスク終了時にController Serverが呼ぶ`reset()`はインターフェースの既定（何もしない）のままなので、
-タスク間のcoreの状態はJazzyと同じである。
+
+**Controller Serverからの呼び出しは両インターフェースで同じに扱う。** タスク終了時（成功・キャンセル・
+失敗のいずれでも）にController Serverが呼ぶ`reset()`は、coreの時間的な状態、すなわち`AVOIDING`の
+ラッチ、前回選んだ指令、平滑化した速度cap、整列モードをクリアする。次のgoalは前タスクのラッチを
+引き継がず、activate直後と同じ状態から始まる。Speed Filterなどの`speed_limit`配信から呼ばれる
+`setSpeedLimit()`は、前進・後退・横の上限（`limits.v_max`、`limits.v_min`、`limits.vy_max`）を一つの比率で
+縮める。百分率はそのまま、絶対値は`limits.v_max`に対する比として扱う。`0`（`NO_SPEED_LIMIT`）または
+100 %で設定値に戻り、設定値を超える制限で上限が上がることはない。負または非有限の制限は警告して
+無視する。ヨーレート上限`limits.w_max`は縮めないので、速度制限区域は走行を遅くするがその場回頭は
+遅くしない。
 
 ## Ackermann指令contract
 
@@ -198,8 +206,13 @@ ros2 run bilateral_arc_clearance_controller bac_filter_node \
 install済みの例は次のようにも起動できる。
 
 ```bash
-ros2 launch bilateral_arc_clearance_controller bac_filter.launch.py
+ros2 launch bilateral_arc_clearance_controller bac_filter.launch.py use_sim_time:=false
 ```
+
+このnodeはcomposable node `bac::BacFilterNode`でもあり、入力を配信するnodeと同じcomponent containerに
+loadできる。tickはnode clockで`control_period`ごとに走り、`use_sim_time`下では`/clock`に従う。
+2つのcmd_vel topicの型はそのディストリビューションのNav2に合わせ、Jazzyまでは`geometry_msgs/Twist`、
+Kilted以降は`TwistStamped`である。`enable_stamped_cmd_vel`で上書きできる。
 
 障害物が`influence_range`外なら入力を透過し、`AVOIDING`ではcore出力を使い、scanまたはodom途絶時は
 停止する。`avoid_status`は`0=CLEAR`、`1=AVOIDING`、`2=STOP`である。

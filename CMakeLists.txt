@@ -24,7 +24,7 @@ add_library(bac_core STATIC
 )
 target_include_directories(bac_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
+    $<INSTALL_INTERFACE:include/${PROJECT_NAME}>
 )
 target_compile_options(bac_core PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(bac_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -34,7 +34,10 @@ if(ament_cmake_FOUND)
   option(BAC_BUILD_NAV2_PLUGIN
       "Build the Nav2 controller plugin (requires the supported Nav2 API)" ON)
 
-  install(DIRECTORY include/ DESTINATION include)
+  # Headers go to include/<package>/<package>/, the layout ROS 2 recommends
+  # from Humble on: in a merged install space a package-specific include
+  # directory cannot shadow another package's headers.
+  install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
   install(DIRECTORY docs/ DESTINATION share/${PROJECT_NAME}/docs)
   install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
   install(DIRECTORY launch DESTINATION share/${PROJECT_NAME}
@@ -85,9 +88,10 @@ if(ament_cmake_FOUND)
       RUNTIME DESTINATION bin
   )
   ament_export_targets(export_bac_core HAS_LIBRARY_TARGET)
-  ament_export_include_directories(include)
+  ament_export_include_directories("include/${PROJECT_NAME}")
 
   find_package(rclcpp REQUIRED)
+  find_package(rclcpp_components REQUIRED)
   find_package(geometry_msgs REQUIRED)
   find_package(nav_msgs REQUIRED)
   find_package(sensor_msgs REQUIRED)
@@ -100,9 +104,12 @@ if(ament_cmake_FOUND)
   # packages export their targets as <pkg>_TARGETS on every distribution this
   # package builds on (Jazzy, Kilted, Lyrical); the rest export <pkg>::<name>.
 
-  # Evaluation node: cmd_vel filter driven by a laser scan
-  add_executable(bac_filter_node src/bac_filter_node.cpp)
-  target_link_libraries(bac_filter_node PRIVATE
+  # Evaluation node: cmd_vel filter driven by a laser scan. Built as the
+  # composable node bac::BacFilterNode, which a component container can load;
+  # rclcpp_components generates the standalone bac_filter_node executable
+  # (same name, same `ros2 run` / launch usage as before).
+  add_library(bac_filter_component SHARED src/bac_filter_node.cpp)
+  target_link_libraries(bac_filter_component PUBLIC
       bac_core
       rclcpp::rclcpp
       ${geometry_msgs_TARGETS}
@@ -110,8 +117,17 @@ if(ament_cmake_FOUND)
       ${sensor_msgs_TARGETS}
       ${std_msgs_TARGETS}
   )
-  target_compile_options(bac_filter_node PRIVATE -Wall -Wextra -Wpedantic)
-  install(TARGETS bac_filter_node DESTINATION lib/${PROJECT_NAME})
+  target_link_libraries(bac_filter_component PRIVATE rclcpp_components::component)
+  target_compile_options(bac_filter_component PRIVATE -Wall -Wextra -Wpedantic)
+  rclcpp_components_register_node(bac_filter_component
+      PLUGIN "bac::BacFilterNode"
+      EXECUTABLE bac_filter_node
+  )
+  install(TARGETS bac_filter_component
+      ARCHIVE DESTINATION lib
+      LIBRARY DESTINATION lib
+      RUNTIME DESTINATION bin
+  )
 
   if(BAC_BUILD_NAV2_PLUGIN)
     find_package(rclcpp_lifecycle REQUIRED)
@@ -201,6 +217,9 @@ if(BUILD_TESTING)
   target_link_libraries(bac_core_unit bac_core)
   target_compile_options(bac_core_unit PRIVATE -Wall -Wextra -Wpedantic)
   add_test(NAME BacCoreUnit COMMAND bac_core_unit)
+  # The suite includes inputs that used to hang process(); a regression must
+  # fail here rather than stall CI until its job timeout.
+  set_tests_properties(BacCoreUnit PROPERTIES TIMEOUT 120)
 
   # Differential-drive output reachability stage (behaviour every existing
   # differential-drive user receives; see CHANGELOG "Forthcoming").
@@ -297,6 +316,15 @@ if(BUILD_TESTING)
       target_compile_options(bac_ros_adapter_unit PRIVATE -Wall -Wextra -Wpedantic)
       add_test(NAME BacRosAdapterUnit COMMAND bac_ros_adapter_unit)
     endif()
+
+    # The filter node in-process: clock source, tick period, stamped and
+    # unstamped cmd_vel, and refused parameter changes.
+    find_package(rosgraph_msgs REQUIRED)
+    add_executable(bac_filter_node_unit test/filter_node_unit.cpp)
+    target_include_directories(bac_filter_node_unit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(bac_filter_node_unit PRIVATE bac_filter_component ${rosgraph_msgs_TARGETS})
+    target_compile_options(bac_filter_node_unit PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME BacFilterNodeUnit COMMAND bac_filter_node_unit)
   endif()
 endif()
 

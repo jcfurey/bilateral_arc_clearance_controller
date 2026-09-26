@@ -5,6 +5,11 @@
 `bac_filter_node` と `bac::BacController` は、下表のコアパラメータを共通名で公開する。
 nav2 プラグインでは名前空間（例: `FollowPath.`）を先頭に付ける。単位は SI。
 
+どちらのコンポーネントもパラメータを一度だけ読む。フィルタノードは起動時、nav2 プラグインは Controller
+Server が configure したときである。受け付けても使われない実行時の変更（`ros2 param set`）は拒否し、
+理由を応答に含める。フィルタノードは再起動し、nav2 プラグインは Controller Server を deactivate・cleanup・
+configure する。プラグインが非アクティブの間は変更を受け付ける。
+
 ## 車体・余裕
 
 | パラメータ | 既定値 | 説明 |
@@ -115,7 +120,7 @@ degradeするため、configure時にthrowする。**横移動は車体の側方
 | `limits.w_max` | 1.0 | 最大角速度絶対値 [rad/s] |
 | `limits.acc_v` | 0.8 | 並進 dynamic window の加速度 [m/s²] |
 | `limits.acc_w` | 2.5 | 出力ヨーレート制限に使う実機の車体角加速度。0で無効 [rad/s²] |
-| `control_period` | 0.05 | ヨーレート出力制限が仮定する制御周期 [s] |
+| `control_period` | 0.05 | ヨーレート出力制限が仮定する制御周期 [s]。フィルタノードの tick 周期でもある |
 | `window_time` | 0.25 | 並進 dynamic window の時間幅 [s] |
 | `v_samples` | 5 | 並進速度サンプル数（停止行は別途追加。回頭行は`diff_drive`のみ） |
 | `w_samples` | 25 | 差動二輪のヨーレート、またはAckermannの車体曲率の粗サンプル数 |
@@ -202,11 +207,13 @@ Ackermann設定例（`turn_radius_min` 1.0、`w_max` 0.8）では前者2.0に対
 | `costmap_margin_compensation` | nav2 | 自動 | セル中心量子化の補償 [m] |
 | `plan_yaw_mode` | nav2 | `"off"` | `omni`のみ。`"plan"`でplanのpose orientationが姿勢規範を握る（接線追従を置換、[運動モデル](#運動モデル)の節末尾を参照）。他モデルや未知の値はconfigure失敗。YAML 1.1では裸の`off`が真偽値になるため引用符が必須 |
 | `diagnostics_publish_period` | nav2 | 1.0 | 標準 `diagnostics` message の周期。0以下で無効 [s] |
+| `enable_stamped_cmd_vel` | filter | ディストリビューション依存 | `cmd_vel_in` と `cmd_vel_out` の型を `Twist` ではなく `geometry_msgs/TwistStamped` にする。既定値はそのディストリビューションの Nav2 に合わせ、Jazzy までは `false`、Kilted 以降は `true`。stamped 出力は入力の `frame_id` を引き継ぐ |
 | `sensor.x/y/yaw` | filter | 0 | LaserScan フレームの固定 2D 外部パラメータ |
 | `virtual_path_length` | filter | 3.0 | 入力 `cmd_vel` から作る仮想経路長 [m] |
 
-フィルタノードは TF を参照しないので `sensor.*` を実機に合わせる。nav2 プラグインは TF から
-LaserScan を base frame へ変換する。標準 `diagnostics` 出力には `raw_scan`、`costmap`、
+フィルタノードは TF を参照しないので `sensor.*` を実機に合わせる。tick はノードクロックで
+`control_period` ごとに走るため、`use_sim_time` 下では tick も鮮度タイムアウトも `/clock` に従う。
+nav2 プラグインは TF から LaserScan を base frame へ変換する。標準 `/diagnostics` 出力には `raw_scan`、`costmap`、
 `costmap_fallback`、fallback 理由、BAC status、候補数、選択候補の clearance を含む。
 
 ## 内部定数（ROS パラメータ非公開）

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "bilateral_arc_clearance_controller/bac_core.hpp"
 #include "motion_model.hpp"
@@ -24,12 +25,23 @@ namespace ros_parameters
  * NodeT is either rclcpp::Node or rclcpp_lifecycle::LifecycleNode. Keeping
  * this list in one place prevents the filter and nav2 plugin from silently
  * exposing different subsets of Params.
+ *
+ * `declared_names`, when given, receives the full name of every parameter
+ * this function reads, so the caller can refuse later changes to them.
  */
 template<typename NodeT>
-Params declareCoreParameters(NodeT &node, const std::string &prefix = "")
+Params declareCoreParameters(NodeT &node, const std::string &prefix = "",
+                             std::vector<std::string> *declared_names = nullptr)
 {
+  auto note = [&](const std::string &full_name) {
+    if (declared_names != nullptr)
+    {
+      declared_names->push_back(full_name);
+    }
+  };
   auto declare_float = [&](const std::string &name, float default_value) {
     const std::string full_name = prefix + name;
+    note(full_name);
     if (!node.has_parameter(full_name))
     {
       node.template declare_parameter<double>(full_name, static_cast<double>(default_value));
@@ -38,6 +50,7 @@ Params declareCoreParameters(NodeT &node, const std::string &prefix = "")
   };
   auto declare_int = [&](const std::string &name, int default_value) {
     const std::string full_name = prefix + name;
+    note(full_name);
     if (!node.has_parameter(full_name))
     {
       node.template declare_parameter<std::int64_t>(full_name, default_value);
@@ -46,6 +59,7 @@ Params declareCoreParameters(NodeT &node, const std::string &prefix = "")
   };
   auto declare_string = [&](const std::string &name, const std::string &default_value) {
     const std::string full_name = prefix + name;
+    note(full_name);
     if (!node.has_parameter(full_name))
     {
       node.template declare_parameter<std::string>(full_name, default_value);

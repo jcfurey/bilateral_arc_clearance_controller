@@ -92,8 +92,17 @@ the path handler's plan is accepted and not consumed: it is expressed in the cos
 the path handler's own `prune_distance` (2.0 m by default in Nav2 1.5), so following it would let a Controller
 Server parameter this package neither documents nor measures decide how much path the core sees. The path
 handler still runs in the Controller Server and still publishes `transformed_global_plan`; that topic shows the
-handler's window, not the window BAC evaluates. The Controller Server's `reset()` call at the end of a task is
-left at the interface's no-op default, so the core's state between tasks is the same as on Jazzy.
+handler's window, not the window BAC evaluates.
+
+**The Controller Server hooks behave the same under both interfaces.** `reset()`, which the Controller Server
+calls whenever a task ends (succeeded, cancelled or failed), clears the core's temporal state: the `AVOIDING`
+latch, the previously selected command, the smoothed speed cap and the alignment mode. The next goal therefore
+starts as it would after activation instead of inheriting the last task's latch. `setSpeedLimit()`, driven by
+Speed Filter or any other `speed_limit` publisher, scales the forward, reverse and lateral bounds
+(`limits.v_max`, `limits.v_min`, `limits.vy_max`) by one ratio: a percentage directly, an absolute limit
+relative to `limits.v_max`. `0` (`NO_SPEED_LIMIT`) or 100 % restores the configured bounds; a limit above them
+does not raise them, and a negative or non-finite limit is ignored with a warning. The yaw-rate bound
+`limits.w_max` is not scaled, so a speed zone slows travel without slowing a turn in place.
 
 ## Ackermann command contract
 
@@ -208,8 +217,13 @@ ros2 run bilateral_arc_clearance_controller bac_filter_node \
 The installed example can instead be started with:
 
 ```bash
-ros2 launch bilateral_arc_clearance_controller bac_filter.launch.py
+ros2 launch bilateral_arc_clearance_controller bac_filter.launch.py use_sim_time:=false
 ```
+
+The node is also the composable node `bac::BacFilterNode`, so it can be loaded into an existing component
+container next to the node that publishes its input. Its tick runs every `control_period` on the node clock
+and follows `/clock` under `use_sim_time`. Both cmd_vel topics are `geometry_msgs/Twist` through Jazzy and
+`TwistStamped` from Kilted on, matching the distribution's Nav2; `enable_stamped_cmd_vel` overrides that.
 
 It passes the command through when obstacles are outside `influence_range`, uses core output while `AVOIDING`,
 and stops if scan or odometry input times out. `avoid_status` is `0=CLEAR`, `1=AVOIDING`, or `2=STOP`.

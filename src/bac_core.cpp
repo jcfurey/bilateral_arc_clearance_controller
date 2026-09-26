@@ -78,6 +78,21 @@ brakingDistance(float speed, const Params &params)
 float
 wrapAngle(float a)
 {
+  // A non-finite angle has no direction. Left to the loops below, +/-inf
+  // never terminates (inf - 2*pi == inf), and neither does any |a| above
+  // about 1.3e8, where 2*pi falls below one ULP. Both hung process() - a goal
+  // heading or plan yaw of inf, or a pathological sim_time, was enough.
+  if (!std::isfinite(a))
+  {
+    return 0.0f;
+  }
+  // Far outside [-pi, pi] reduce in one step. Within +/-64 rad the loops
+  // alone run, as before, so every angle a sane input produces wraps to the
+  // same bits it always did.
+  if (std::fabs(a) > 64.0f)
+  {
+    a = std::remainder(a, 2.0f * kPi);
+  }
   while (a > kPi) a -= 2.0f * kPi;
   while (a < -kPi) a += 2.0f * kPi;
   return a;
@@ -90,6 +105,13 @@ filterObstaclePoints(const std::vector<Point2D> &points, const Params &params)
   filtered.reserve(points.size());
   for (const Point2D &point : points)
   {
+    // A NaN coordinate fails every comparison downstream: the proximity test
+    // then reads it as touching the body (a false emergency stop, or an
+    // escape steered by a NaN offending point). It is not an observation.
+    if (!std::isfinite(point.x) || !std::isfinite(point.y))
+    {
+      continue;
+    }
     if (std::sqrt(point.x * point.x + point.y * point.y) > params.max_range)
     {
       continue;
@@ -973,17 +995,24 @@ BacCore::setParams(const Params &params)
 
   const Params previous = params_;
   params_ = params;
-  try
+  // The models hold a reference to params_ and read it on every call, so a
+  // new model is needed only when the TYPE changes. Rebuilding on every call
+  // cost an allocation per setParams, which the ROS adapters make whenever a
+  // speed bound changes - every control tick, in the filter node.
+  if (!motion_model_ || previous.motion_model.type != params.motion_model.type)
   {
-    rebuildMotionModel();
-  }
-  catch (...)
-  {
-    // Validation above rejects an unusable configuration, so reaching here
-    // means allocation failed. Restore params_ so the surviving model still
-    // describes the configuration this object reports.
-    params_ = previous;
-    throw;
+    try
+    {
+      rebuildMotionModel();
+    }
+    catch (...)
+    {
+      // Validation above rejects an unusable configuration, so reaching here
+      // means allocation failed. Restore params_ so the surviving model still
+      // describes the configuration this object reports.
+      params_ = previous;
+      throw;
+    }
   }
 
   if (previous.motion_model.type != params.motion_model.type ||
@@ -1396,6 +1425,28 @@ BacCore::process(const std::vector<Point2D> &points, const std::vector<Point2D> 
                  const std::vector<float> &path_yaw)
 {
   Result result;
+
+  // Velocity feedback that is not a number (a broken odometry source) has no
+  // braking distance and no reachable window: every speed comparison below is
+  // false, which skipped the emergency brake and widened the acceleration
+  // window to the full speed range. Stop, as for missing feedback.
+  if (!std::isfinite(current.v) || !std::isfinite(current.w) || !std::isfinite(current.vy))
+  {
+    current_status_ = Status::STOP;
+    result.output   = Twist2D(0.0f, 0.0f);
+    result.status   = Status::STOP;
+    return result;
+  }
+  // A non-finite goal heading or plan orientation carries no direction; treat
+  // it as absent rather than steer by it.
+  if (goal_heading && !std::isfinite(*goal_heading))
+  {
+    return process(points, path, current, std::nullopt, path_yaw);
+  }
+  if (std::any_of(path_yaw.begin(), path_yaw.end(), [](float y) { return !std::isfinite(y); }))
+  {
+    return process(points, path, current, goal_heading, {});
+  }
 
   const std::vector<Point2D> filtered_points = filterObstaclePoints(points, params_);
 

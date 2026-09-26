@@ -234,6 +234,11 @@ ArcTrajectoryEvaluator::evaluate(const std::vector<Point2D> &points, const Twist
   const float side_margin = std::max(params_.safety_margin.side, 1e-3f);
   const float s_max_clear = clearance_distance + lead_length;
   const float s_max = std::max(blocking_distance, clearance_distance) + lead_length;
+  // The arc's start angle about the turn centre is the same for every point.
+  // Computed inside the loop it cost one atan2 per point per turning
+  // candidate (the compiler cannot hoist it: atan2 may set errno); hoisted,
+  // it is the same call on the same arguments, so the result is bit-identical.
+  const float alpha0 = frame.turning ? std::atan2(-frame.cy, -frame.cx) : 0.0f;
 
   for (const Point2D &point : points)
   {
@@ -252,7 +257,6 @@ ArcTrajectoryEvaluator::evaluate(const std::vector<Point2D> &points, const Twist
       left_offset = (frame.turn_radius - radial) * ((w > 0.0f) ? 1.0f : -1.0f);
 
       const float alpha = std::atan2(ruy, rux);
-      const float alpha0 = std::atan2(-frame.cy, -frame.cx);
       float delta = alpha - alpha0;
       while (delta > kPi) delta -= 2.0f * kPi;
       while (delta <= -kPi) delta += 2.0f * kPi;

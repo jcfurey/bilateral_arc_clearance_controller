@@ -456,8 +456,10 @@ public:
   void reset();
 
 private:
-  /// Bound to this instance's params_. Built once per configuration so that
-  /// process() neither allocates nor throws on a bad configuration.
+  /// Bound to this instance's params_ by reference, and rebuilt only when the
+  /// model type changes, so process() never builds a model and never meets
+  /// an unvalidated configuration (setParams() rejects it first). process()
+  /// still allocates its per-tick working vectors.
   void rebuildMotionModel();
 
   /// Sampling speed cap and passage tightness for this tick. `v_cap` is the

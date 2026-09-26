@@ -33,6 +33,16 @@ BacController::configure(const Nav2Node::WeakPtr &parent, std::string name,
   costmap_ros_ = costmap_ros;
 
   auto node = parent.lock();
+  if (!node)
+  {
+    throw nav2_core::ControllerException("bac: unable to lock the controller server node");
+  }
+  logger_ = node->get_logger();
+  RCLCPP_INFO(logger_, "Configuring controller: %s of type bac::BacController", name.c_str());
+  // configure() may run again after cleanup(); state set by a previous
+  // configuration must not survive into this one.
+  plan_yaw_ = false;
+  speed_ratio_.store(1.0f);
 
   auto declare_float = [&](const std::string &param_name, float default_value) {
     const std::string full_name = name + "." + param_name;
@@ -43,7 +53,7 @@ BacController::configure(const Nav2Node::WeakPtr &parent, std::string name,
     return static_cast<float>(node->get_parameter(full_name).as_double());
   };
   Params params = ros_parameters::declareCoreParameters(*node, name + ".");
-  base_v_max_   = params.limits.v_max;
+  base_limits_  = params.limits;
 
   // Direct laser input: the core is designed for raw scan points. When
   // scan_topic is set, fresh scans feed it and the costmap is only a fallback
@@ -79,8 +89,10 @@ BacController::configure(const Nav2Node::WeakPtr &parent, std::string name,
         scan_topic_, rclcpp::SensorDataQoS(), on_scan);
 #endif
   }
+  // Absolute, as diagnostic_updater publishes it: the aggregator listens on
+  // /diagnostics whatever namespace the controller server runs in.
   diagnostics_pub_ = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
-      "diagnostics", rclcpp::SystemDefaultsQoS());
+      "/diagnostics", rclcpp::SystemDefaultsQoS());
 
   // Costmap-fed points are cell centers, which can sit up to half a cell
   // inside the true obstacle surface. Deduct that quantization error from the
@@ -172,38 +184,88 @@ BacController::configure(const Nav2Node::WeakPtr &parent, std::string name,
   }
 
   core_.setParams(params);
+
+  parameter_callback_ = node->add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> &parameters) {
+        return onSetParameters(parameters);
+      });
+}
+
+rcl_interfaces::msg::SetParametersResult
+BacController::onSetParameters(const std::vector<rclcpp::Parameter> &parameters) const
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+  if (!active_.load())
+  {
+    return result;
+  }
+  const std::string prefix = name_ + ".";
+  for (const auto &parameter : parameters)
+  {
+    if (parameter.get_name().compare(0, prefix.size(), prefix) == 0)
+    {
+      result.successful = false;
+      result.reason = "bac: " + parameter.get_name() +
+                      " is read when the controller is configured; deactivate, clean up and "
+                      "configure the controller server to change it";
+      break;
+    }
+  }
+  return result;
 }
 
 void
 BacController::cleanup()
 {
+  RCLCPP_INFO(logger_, "Cleaning up controller: %s", name_.c_str());
+  if (parameter_callback_)
+  {
+    if (auto node = parent_.lock())
+    {
+      node->remove_on_set_parameters_callback(parameter_callback_.get());
+    }
+    parameter_callback_.reset();
+  }
   scan_sub_.reset();
   diagnostics_pub_.reset();
   {
     std::lock_guard<std::mutex> lock(scan_mutex_);
     latest_scan_.reset();
   }
+  plan_ = nav_msgs::msg::Path();
+  speed_ratio_.store(1.0f);
   core_.reset();
 }
 
 void
 BacController::activate()
 {
+  RCLCPP_INFO(logger_, "Activating controller: %s", name_.c_str());
   core_.reset();
   last_diagnostics_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
   if (diagnostics_pub_)
   {
     diagnostics_pub_->on_activate();
   }
+  active_.store(true);
 }
 
 void
 BacController::deactivate()
 {
+  RCLCPP_INFO(logger_, "Deactivating controller: %s", name_.c_str());
+  active_.store(false);
   if (diagnostics_pub_)
   {
     diagnostics_pub_->on_deactivate();
   }
+}
+
+void
+BacController::reset()
+{
+  core_.reset();
 }
 
 void
@@ -262,11 +324,38 @@ BacController::collectObstaclePoints(const geometry_msgs::msg::PoseStamped &pose
   double cs = std::cos(-yaw), sn = std::sin(-yaw);
   double range = core_.params().max_range;
 
-  for (unsigned int my = 0; my < costmap->getSizeInCellsY(); my++)
+  const unsigned int size_x = costmap->getSizeInCellsX();
+  const unsigned int size_y = costmap->getSizeInCellsY();
+  if (size_x == 0 || size_y == 0)
   {
-    for (unsigned int mx = 0; mx < costmap->getSizeInCellsX(); mx++)
+    return points;
+  }
+  // Visit only the cells whose centre can lie within max_range: the square
+  // window around the robot, clamped to the map. worldToMapEnforceBounds
+  // rounds down, so the window is a superset of the cells the distance test
+  // below keeps, and the points come out in the same row-major order as a
+  // whole-map walk. A non-finite pose keeps the whole-map walk.
+  int mx_lo = 0, my_lo = 0;
+  int mx_hi = static_cast<int>(size_x) - 1, my_hi = static_cast<int>(size_y) - 1;
+  if (std::isfinite(rx) && std::isfinite(ry) && std::isfinite(range))
+  {
+    costmap->worldToMapEnforceBounds(rx - range, ry - range, mx_lo, my_lo);
+    costmap->worldToMapEnforceBounds(rx + range, ry + range, mx_hi, my_hi);
+    mx_lo = std::clamp(mx_lo, 0, static_cast<int>(size_x) - 1);
+    my_lo = std::clamp(my_lo, 0, static_cast<int>(size_y) - 1);
+    mx_hi = std::clamp(mx_hi, 0, static_cast<int>(size_x) - 1);
+    my_hi = std::clamp(my_hi, 0, static_cast<int>(size_y) - 1);
+  }
+  const unsigned char *charmap = costmap->getCharMap();
+
+  for (unsigned int my = static_cast<unsigned int>(my_lo); my <= static_cast<unsigned int>(my_hi);
+       my++)
+  {
+    const unsigned char *row = charmap + static_cast<std::size_t>(my) * size_x;
+    for (unsigned int mx = static_cast<unsigned int>(mx_lo);
+         mx <= static_cast<unsigned int>(mx_hi); mx++)
     {
-      if (costmap->getCost(mx, my) < nav2_costmap_2d::LETHAL_OBSTACLE)
+      if (row[mx] < nav2_costmap_2d::LETHAL_OBSTACLE)
       {
         continue;
       }
@@ -469,16 +558,20 @@ geometry_msgs::msg::TwistStamped
 BacController::computeCommand(const geometry_msgs::msg::PoseStamped &pose,
                               const geometry_msgs::msg::Twist &velocity)
 {
-  // Speed limit re-caps the sampled window
-  Params params = core_.params();
-  float  v_max  = base_v_max_;
-  if (speed_limit_ > 0.0f)
+  // The speed limit scales the sampled window's translational bounds. Only a
+  // change reaches setParams(); an unchanged limit costs a comparison.
+  const float ratio = speed_ratio_.load();
+  const Params &current_params = core_.params();
+  const float v_max  = base_limits_.v_max * ratio;
+  const float v_min  = base_limits_.v_min * ratio;
+  const float vy_max = base_limits_.vy_max * ratio;
+  if (current_params.limits.v_max != v_max || current_params.limits.v_min != v_min ||
+      current_params.limits.vy_max != vy_max)
   {
-    v_max = std::min(v_max, speed_limit_);
-  }
-  if (params.limits.v_max != v_max)
-  {
-    params.limits.v_max = v_max;
+    Params params       = current_params;
+    params.limits.v_max  = v_max;
+    params.limits.v_min  = v_min;
+    params.limits.vy_max = vy_max;
     core_.setParams(params);
   }
 
@@ -502,8 +595,11 @@ BacController::computeCommand(const geometry_msgs::msg::PoseStamped &pose,
   Result result = core_.process(points, path, current, goal_heading, path_yaw);
   publishDiagnostics(result, using_scan);
 
+  // The twist is a body velocity: it is expressed in the base frame, not in
+  // the frame of the pose it was computed from.
   geometry_msgs::msg::TwistStamped cmd;
-  cmd.header.frame_id = pose.header.frame_id;
+  cmd.header.frame_id = costmap_ros_->getBaseFrameID();
+  cmd.header.stamp    = clock_->now();
   cmd.twist.linear.x  = result.output.v;
   cmd.twist.linear.y  = result.output.vy;  // zero for every non-holonomic model
   cmd.twist.angular.z = result.output.w;
@@ -513,8 +609,19 @@ BacController::computeCommand(const geometry_msgs::msg::PoseStamped &pose,
 void
 BacController::setSpeedLimit(const double &speed_limit, const bool &percentage)
 {
-  speed_limit_ = percentage ? static_cast<float>(base_v_max_ * speed_limit / 100.0) :
-                              static_cast<float>(speed_limit);
+  if (!std::isfinite(speed_limit) || speed_limit < 0.0)
+  {
+    RCLCPP_WARN(logger_, "bac: ignoring invalid speed limit %f (keeping the previous one)",
+                speed_limit);
+    return;
+  }
+  double ratio = 1.0;  // speed_limit == 0: nav2_costmap_2d::NO_SPEED_LIMIT
+  if (speed_limit > 0.0)
+  {
+    ratio = percentage ? speed_limit / 100.0 :
+                         speed_limit / static_cast<double>(base_limits_.v_max);
+  }
+  speed_ratio_.store(static_cast<float>(std::min(1.0, ratio)));
 }
 
 }  // namespace bac

@@ -4,6 +4,76 @@ Changelog for package bilateral_arc_clearance_controller
 
 Forthcoming
 -----------
+* Nav2 plugin: implement ``reset()``. The Controller Server calls it when a
+  task ends (Jazzy and Lyrical alike); it was left at the interface's no-op
+  default, so a task that ended while ``AVOIDING`` handed its latch, previous
+  command and smoothed speed cap to the next goal. It now clears the core's
+  temporal state, as ``activate()`` does.
+* Nav2 plugin: ``setSpeedLimit()`` scales the forward, reverse and lateral
+  bounds (``limits.v_max``, ``limits.v_min``, ``limits.vy_max``) by one ratio.
+  Only ``limits.v_max`` was capped, so a base configured for reverse backed up
+  at full ``limits.v_min`` speed inside a speed zone. A negative or non-finite
+  limit is ignored with a warning, and the limit is stored atomically: the
+  Controller Server calls ``setSpeedLimit()`` from its executor thread while
+  ``computeVelocityCommands()`` runs on the controller thread, which was a data
+  race on a plain ``float``.
+* Nav2 plugin: a configure after cleanup starts from that configuration alone.
+  ``plan_yaw_mode`` could not be switched back to ``"off"`` (the previous
+  ``"plan"`` survived), and a speed limit from before the cleanup survived
+  too.
+* Nav2 plugin: refuse a runtime change to a ``<plugin>.*`` parameter while the
+  controller is active, naming the parameter and how to apply it. The plugin
+  reads its parameters at configure, so ``ros2 param set`` used to report
+  success for a value that was never used. A deactivated controller accepts the
+  change for its next configure.
+* Nav2 plugin: stamp the command with the clock and express it in the
+  costmap's base frame; it carried the frame of the robot pose (the costmap's
+  global frame) and no stamp. Publish diagnostics on the absolute
+  ``/diagnostics`` that ``diagnostic_aggregator`` listens on, not relative to
+  the Controller Server's namespace. Fail configure with
+  ``nav2_core::ControllerException`` if the parent node is gone, and log the
+  lifecycle transitions as the Nav2 controllers do.
+* Nav2 plugin: without a raw scan, collect costmap obstacles from the cells
+  within ``max_range`` of the robot through the costmap's row pointer instead
+  of calling ``getCost()`` on every cell of the map. The points and their order
+  are unchanged; the work per tick no longer grows with the costmap's size.
+* ``bac_filter_node``: build it as the composable node ``bac::BacFilterNode``
+  (``rclcpp_components``); the ``bac_filter_node`` executable and its launch
+  usage are unchanged. The tick runs every ``control_period`` on the node
+  clock. It was a fixed 50 ms wall-clock timer: the core's acceleration and
+  yaw-rate limits assumed ``control_period`` whatever the timer did, and under
+  ``use_sim_time`` the node ticked on wall time while its freshness checks ran
+  on ``/clock``. A non-positive ``control_period`` fails at startup.
+* ``bac_filter_node``: add ``enable_stamped_cmd_vel`` for
+  ``geometry_msgs/TwistStamped`` on both cmd_vel topics. Its default follows the
+  distribution's Nav2 (``false`` through Jazzy, ``true`` from Kilted on); the
+  stamped output keeps the input's ``frame_id``. Runtime parameter changes are
+  refused, as every parameter is read at startup. ``bac_filter.launch.py``
+  takes ``use_sim_time`` and finds its parameter file with
+  ``FindPackageShare``.
+* Core: non-finite inputs no longer reach the planner. NaN velocity feedback
+  stops the robot (every speed comparison was false, so the emergency brake was
+  skipped and the window opened to the full speed range); NaN obstacle points
+  are dropped (they read as touching the body); a non-finite goal heading or
+  plan orientation is treated as absent; and ``wrapAngle`` returns for
+  ``+/-inf`` and very large angles, where it looped forever.
+* Core: reject ``v_samples``, ``w_samples``, ``vy_samples`` or
+  ``w_refine_steps`` above 1000 and a non-positive or non-finite ``sim_time``
+  or ``control_period`` in ``setParams``. The sample counts overflowed ``int``
+  arithmetic and then made ``process()`` throw.
+* Core: ``setParams`` rebuilds the motion model only when its type changes (the
+  models read ``params_`` by reference), which removes an allocation from every
+  tick on which a ROS adapter changes a speed bound. The arc evaluator computes
+  the arc's start angle once per candidate rather than once per point. Outputs
+  are byte-identical on every regression fixture, all 34 per-tick trace files
+  and a randomized 60000-tick stateful comparison; the ``bac_perf_benchmark``
+  p50 is about 5-10 % lower from 480 to 4000 points. The benchmark's two walls are now contiguous blocks:
+  interleaved, its ``max_points`` subsampling kept only one of them.
+* Build: install headers to ``include/${PROJECT_NAME}``, the layout ROS 2
+  recommends from Humble on; consumers of the exported targets are unaffected.
+  Add ``BacFilterNodeUnit`` (clock source, tick period, both cmd_vel types and
+  refused parameter changes, in-process) and put a timeout on
+  ``BacCoreUnit``, whose inputs used to hang ``process()``.
 * Build and test on ROS 2 Lyrical (Nav2 1.5) alongside ROS 2 Jazzy (Nav2
   1.3). Nav2 1.5 changed the ``nav2_core::Controller`` interface - the parent
   node is a ``nav2::LifecycleNode``, ``setPlan()`` became
@@ -161,7 +231,8 @@ Forthcoming
   differential drive.
 * Bind the motion model once per configuration instead of per control tick, so
   an unusable kinematic configuration is rejected by ``setParams`` and
-  ``process`` neither allocates nor throws.
+  ``process`` never builds a model or meets an unvalidated configuration. (It
+  still allocates its per-tick working vectors.)
 * Validate a motion-model configuration before committing it. A rejected
   ``setParams`` previously left the surviving model reading the rejected
   parameters, where a non-positive ``turn_radius_min`` turned the Ackermann
