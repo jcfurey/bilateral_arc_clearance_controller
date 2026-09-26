@@ -7,7 +7,7 @@ Stage 2 added `docker/` and `examples/` to the install rules because the
 installed documentation links into them: README.md, README.ja.md,
 docs/README.md, docs/en/README.md and both language versions of
 docs/ablation_and_matched_evaluation.md carry 12 relative links to
-docker/nav2-jazzy/README.md and examples/gazebo/README.md, and before those two
+docker/nav2/README.md and examples/gazebo/README.md, and before those two
 rules none of the 12 resolved under share/<package>. Nothing but a comment in
 CMakeLists.txt held that coupling: drop an install rule and the links go quiet.
 This makes the coupling a test.
@@ -17,7 +17,7 @@ plain-CMake build: every install() rule in CMakeLists.txt sits inside
 `if(ament_cmake_FOUND)`, ament_cmake_DIR is NOTFOUND in a host build, and
 `cmake --install build_host --prefix ...` was measured to write zero files. In
 the container ctest already runs 11 tests against a build tree, not an install
-tree. So this runs from docker/nav2-jazzy/test_package.sh, after colcon has
+tree. So this runs from docker/nav2/test_package.sh, after colcon has
 installed, against the real prefix.
 
 docs/reviews/ IS EXCLUDED, on purpose and not to make a number look good.

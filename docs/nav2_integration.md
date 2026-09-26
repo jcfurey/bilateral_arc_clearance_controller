@@ -72,6 +72,26 @@ supervisor / Collision Monitorでfail-stopを構成する。BACは `raw_scan`、
 `costmap_fallback` を報告し、fallback時はWARN levelで理由を含める。周期は
 `diagnostics_publish_period` で設定し、0以下で無効になる。
 
+## 対応するROS 2ディストリビューション
+
+pluginはROS 2 Lyrical（Nav2 1.5）とROS 2 Jazzy（Nav2 1.3）でビルド・テストしている。Kilted（Nav2 1.4）は
+Jazzyと同じcontrollerインターフェースなのでビルドできる見込みだが、CIでは実行していない。
+
+Nav2 1.5では`nav2_core::Controller`インターフェースが変わった。親ノードは`nav2::LifecycleNode`になり、
+`setPlan()`は`newPathReceived()`に改名され、`computeVelocityCommands()`にはController Serverのpath handlerが
+変換・刈り込みしたplanとgoalも渡される。ビルドはインストール済み`nav2_core`のバージョンから
+インターフェースを選択する（バージョンを報告しないソースビルドでは`CMakeLists.txt`の`BAC_NAV2_API`で
+上書きできる）。
+
+**planの扱いは両者で変わらない。** BACは生のglobal planを保持し、毎tickでTFによりbase frameへ変換し、
+`max_range`で自ら刈り込む。上で述べたとおりである。Nav2 1.5でpath handlerから渡されるplanは受け取るが
+使用しない。それはcostmapのglobal frameで表現され、path handler自身の`prune_distance`（Nav2 1.5の既定値は
+2.0 m）で切られているため、それに従うと本パッケージが文書化も計測もしていないController Serverの
+パラメータがcoreの見るpathの長さを決めてしまう。path handlerはController Server内で引き続き動作し
+`transformed_global_plan`を配信するが、そのtopicが示すのはhandlerの窓であり、BACが評価する窓ではない。
+タスク終了時にController Serverが呼ぶ`reset()`はインターフェースの既定（何もしない）のままなので、
+タスク間のcoreの状態はJazzyと同じである。
+
 ## Ackermann指令contract
 
 `motion_model.type: ackermann`とともに、実測した最小旋回半径`turn_radius_min`を設定する。車両モデルは

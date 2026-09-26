@@ -15,8 +15,9 @@ full Nav2 controller comparison. The core input is capped at 2.5 m, comparable
 to a finite local-costmap horizon; this is a demo condition, not a default recommendation.
 
 The script builds the distribution-independent core and filter with
-`BAC_BUILD_NAV2_PLUGIN=OFF`. The option only excludes the Jazzy Nav2 adapter
-from this Humble evidence environment; normal package builds keep it enabled.
+`BAC_BUILD_NAV2_PLUGIN=OFF`. The option only excludes the Nav2 adapter (built
+for Lyrical and Jazzy) from this Humble evidence environment; normal package
+builds keep it enabled.
 
 ## Reproduce in Docker
 

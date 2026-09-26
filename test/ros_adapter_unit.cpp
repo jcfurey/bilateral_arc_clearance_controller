@@ -19,7 +19,7 @@
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "nav2_core/controller_exceptions.hpp"
 #include "rclcpp/executors/single_threaded_executor.hpp"
-#include "tf2_ros/buffer.h"
+#include "tf2_ros/buffer.hpp"
 
 using namespace std::chrono_literals;
 
@@ -40,6 +40,41 @@ std::string diagnosticValue(const diagnostic_msgs::msg::DiagnosticStatus &status
     }
   }
   return {};
+}
+
+/// The plan entry point of the nav2_core::Controller interface this build
+/// implements (see bac_controller.hpp): newPathReceived() from Nav2 1.5,
+/// setPlan() before it.
+void givePlan(bac::BacController &controller, const nav_msgs::msg::Path &path)
+{
+#if BAC_NAV2_API >= 2
+  controller.newPathReceived(path);
+#else
+  controller.setPlan(path);
+#endif
+}
+
+/// The control tick of that interface. Under Nav2 1.5 the controller server
+/// also hands over the path handler's transformed plan and the goal; the
+/// fixtures pass the plan itself and its last pose, which is what a path
+/// handler produces for a plan already in the costmap frame.
+geometry_msgs::msg::TwistStamped tick(bac::BacController &controller,
+                                      const geometry_msgs::msg::PoseStamped &pose,
+                                      const geometry_msgs::msg::Twist &velocity,
+                                      const nav_msgs::msg::Path &plan)
+{
+#if BAC_NAV2_API >= 2
+  geometry_msgs::msg::PoseStamped goal;
+  if (!plan.poses.empty())
+  {
+    goal = plan.poses.back();
+    goal.header.frame_id = plan.header.frame_id;
+  }
+  return controller.computeVelocityCommands(pose, velocity, nullptr, plan, goal);
+#else
+  (void)plan;
+  return controller.computeVelocityCommands(pose, velocity, nullptr);
+#endif
 }
 
 void spinFor(rclcpp::executors::SingleThreadedExecutor &executor,
@@ -112,7 +147,7 @@ void testControllerAdapter()
     rclcpp::Parameter("FollowPath.diagnostics_publish_period", 0.001),
     rclcpp::Parameter("FollowPath.limits.v_min", 0.0)
   });
-  auto parent = std::make_shared<rclcpp_lifecycle::LifecycleNode>("bac_adapter_test", options);
+  auto parent = std::make_shared<bac::Nav2Node>("bac_adapter_test", options);
   rclcpp::NodeOptions costmap_options;
   costmap_options.parameter_overrides({
     rclcpp::Parameter("plugins", std::vector<std::string>{}),
@@ -125,7 +160,7 @@ void testControllerAdapter()
   });
   auto costmap = std::make_shared<nav2_costmap_2d::Costmap2DROS>(costmap_options);
   costmap->configure();
-  auto tf = std::make_shared<tf2_ros::Buffer>(parent->get_clock());
+  auto tf = std::make_shared<bac::Nav2TfBuffer>(parent->get_clock());
 
   bac::BacController controller;
   controller.configure(parent, "FollowPath", tf, costmap);
@@ -156,10 +191,11 @@ void testControllerAdapter()
   robot_pose.header.frame_id = base_frame;
   robot_pose.pose.orientation.w = 1.0;
   geometry_msgs::msg::Twist velocity;
-  controller.setPlan(straightPlan(base_frame));
+  nav_msgs::msg::Path plan = straightPlan(base_frame);
+  givePlan(controller, plan);
 
   // With no scan received, the configured raw source must visibly fall back.
-  controller.computeVelocityCommands(robot_pose, velocity, nullptr);
+  tick(controller, robot_pose, velocity, plan);
   spinFor(executor, 50ms);
   expect(diagnostic_received, "controller publishes diagnostics while active");
   expect(last_diagnostic.level == diagnostic_msgs::msg::DiagnosticStatus::WARN,
@@ -181,8 +217,7 @@ void testControllerAdapter()
   spinFor(executor, 100ms);
 
   diagnostic_received = false;
-  const geometry_msgs::msg::TwistStamped command =
-      controller.computeVelocityCommands(robot_pose, velocity, nullptr);
+  const geometry_msgs::msg::TwistStamped command = tick(controller, robot_pose, velocity, plan);
   spinFor(executor, 50ms);
   expect(std::isfinite(command.twist.linear.x) && std::isfinite(command.twist.angular.z),
          "fresh clear scan produces a finite command");
@@ -197,25 +232,25 @@ void testControllerAdapter()
   // behind the vehicle. testAckermannAdapterConfiguration asserts the other
   // half, so a motion_model.type that silently resolved to the wrong policy
   // fails one of the two.
-  controller.setPlan(rearPlan(base_frame));
+  const nav_msgs::msg::Path rear_plan = rearPlan(base_frame);
+  givePlan(controller, rear_plan);
   const geometry_msgs::msg::TwistStamped diff_rear_command =
-      controller.computeVelocityCommands(robot_pose, velocity, nullptr);
+      tick(controller, robot_pose, velocity, rear_plan);
   expect(std::fabs(diff_rear_command.twist.linear.x) <= 1e-4 &&
              std::fabs(diff_rear_command.twist.angular.z) > 1e-3,
          "the default Nav2 configuration is differential drive and turns on the spot");
-  controller.setPlan(straightPlan(base_frame));
+  givePlan(controller, plan);
 
   // Nav2 speed limiting must cap the output selected from an otherwise clear scan.
   controller.setSpeedLimit(0.05, false);
-  const geometry_msgs::msg::TwistStamped limited =
-      controller.computeVelocityCommands(robot_pose, velocity, nullptr);
+  const geometry_msgs::msg::TwistStamped limited = tick(controller, robot_pose, velocity, plan);
   expect(limited.twist.linear.x <= 0.05001,
          "absolute Nav2 speed limit caps the selected command");
 
   // A once-valid scan must become a visible fallback after its timeout.
   spinFor(executor, 550ms);
   diagnostic_received = false;
-  controller.computeVelocityCommands(robot_pose, velocity, nullptr);
+  tick(controller, robot_pose, velocity, plan);
   spinFor(executor, 20ms);
   expect(diagnostic_received, "stale scan decision publishes diagnostics");
   expect(diagnosticValue(last_diagnostic, "obstacle_source") == "costmap_fallback" &&
@@ -228,7 +263,7 @@ void testControllerAdapter()
   scan_pub->publish(scan);
   spinFor(executor, 50ms);
   diagnostic_received = false;
-  controller.computeVelocityCommands(robot_pose, velocity, nullptr);
+  tick(controller, robot_pose, velocity, plan);
   spinFor(executor, 20ms);
   expect(diagnostic_received, "invalid scan decision publishes diagnostics");
   expect(diagnosticValue(last_diagnostic, "obstacle_source") == "costmap_fallback" &&
@@ -236,11 +271,11 @@ void testControllerAdapter()
          "invalid scan falls back with an explicit reason");
 
   nav_msgs::msg::Path unavailable_plan = straightPlan("unavailable_frame");
-  controller.setPlan(unavailable_plan);
+  givePlan(controller, unavailable_plan);
   bool threw_tf_error = false;
   try
   {
-    controller.computeVelocityCommands(robot_pose, velocity, nullptr);
+    tick(controller, robot_pose, velocity, unavailable_plan);
   }
   catch (const nav2_core::ControllerTFError &)
   {
@@ -270,8 +305,7 @@ void testAckermannAdapterConfiguration()
     rclcpp::Parameter("FollowPath.motion_model.type", "ackermann"),
     rclcpp::Parameter("FollowPath.turn_radius_min", 0.8)
   });
-  auto parent =
-      std::make_shared<rclcpp_lifecycle::LifecycleNode>("bac_ackermann_adapter_test", options);
+  auto parent = std::make_shared<bac::Nav2Node>("bac_ackermann_adapter_test", options);
   rclcpp::NodeOptions costmap_options;
   costmap_options.parameter_overrides({
     rclcpp::Parameter("plugins", std::vector<std::string>{}),
@@ -287,7 +321,7 @@ void testAckermannAdapterConfiguration()
   costmap_options.arguments({ "--ros-args", "-r", "__node:=ackermann_costmap" });
   auto costmap = std::make_shared<nav2_costmap_2d::Costmap2DROS>(costmap_options);
   costmap->configure();
-  auto tf = std::make_shared<tf2_ros::Buffer>(parent->get_clock());
+  auto tf = std::make_shared<bac::Nav2TfBuffer>(parent->get_clock());
 
   bac::BacController controller;
   controller.configure(parent, "FollowPath", tf, costmap);
@@ -301,9 +335,10 @@ void testAckermannAdapterConfiguration()
 
   // The other half of the model-selection check: where differential drive
   // turns on the spot, a forward-only Ackermann vehicle must brake instead.
-  controller.setPlan(rearPlan(base_frame));
+  const nav_msgs::msg::Path rear_plan = rearPlan(base_frame);
+  givePlan(controller, rear_plan);
   const geometry_msgs::msg::TwistStamped rear_command =
-      controller.computeVelocityCommands(robot_pose, velocity, nullptr);
+      tick(controller, robot_pose, velocity, rear_plan);
   expect(std::fabs(rear_command.twist.linear.x) <= 1e-4 &&
              std::fabs(rear_command.twist.angular.z) <= 1e-4,
          "forward-only Ackermann brakes for a rear plan instead of yawing");
@@ -344,9 +379,8 @@ void testPlanYawAdapterConfiguration()
     options.parameter_overrides({
       rclcpp::Parameter("FollowPath.plan_yaw_mode", "plan"),
     });
-    auto parent =
-        std::make_shared<rclcpp_lifecycle::LifecycleNode>("bac_plan_yaw_reject_test", options);
-    auto tf = std::make_shared<tf2_ros::Buffer>(parent->get_clock());
+    auto parent = std::make_shared<bac::Nav2Node>("bac_plan_yaw_reject_test", options);
+    auto tf = std::make_shared<bac::Nav2TfBuffer>(parent->get_clock());
     bac::BacController controller;
     bool threw = false;
     try
@@ -369,9 +403,8 @@ void testPlanYawAdapterConfiguration()
       rclcpp::Parameter("FollowPath.limits.vy_max", 0.3),
       rclcpp::Parameter("FollowPath.plan_yaw_mode", "sideways"),
     });
-    auto parent =
-        std::make_shared<rclcpp_lifecycle::LifecycleNode>("bac_plan_yaw_badmode_test", options);
-    auto tf = std::make_shared<tf2_ros::Buffer>(parent->get_clock());
+    auto parent = std::make_shared<bac::Nav2Node>("bac_plan_yaw_badmode_test", options);
+    auto tf = std::make_shared<bac::Nav2TfBuffer>(parent->get_clock());
     bac::BacController controller;
     bool threw = false;
     try
@@ -397,8 +430,8 @@ void testPlanYawAdapterConfiguration()
       rclcpp::Parameter("FollowPath.limits.v_min", 0.0),
       rclcpp::Parameter("FollowPath.plan_yaw_mode", mode),
     });
-    auto parent = std::make_shared<rclcpp_lifecycle::LifecycleNode>(node_name, options);
-    auto tf = std::make_shared<tf2_ros::Buffer>(parent->get_clock());
+    auto parent = std::make_shared<bac::Nav2Node>(node_name, options);
+    auto tf = std::make_shared<bac::Nav2TfBuffer>(parent->get_clock());
     bac::BacController controller;
     controller.configure(parent, "FollowPath", tf, costmap);
     controller.activate();
@@ -406,9 +439,10 @@ void testPlanYawAdapterConfiguration()
     robot_pose.header.frame_id = "base_link";
     robot_pose.pose.orientation.w = 1.0;
     geometry_msgs::msg::Twist velocity;
-    controller.setPlan(sidePlanHoldingYaw("base_link"));
+    const nav_msgs::msg::Path side_plan = sidePlanHoldingYaw("base_link");
+    givePlan(controller, side_plan);
     const geometry_msgs::msg::TwistStamped command =
-        controller.computeVelocityCommands(robot_pose, velocity, nullptr);
+        tick(controller, robot_pose, velocity, side_plan);
     controller.deactivate();
     controller.cleanup();
     return command;
