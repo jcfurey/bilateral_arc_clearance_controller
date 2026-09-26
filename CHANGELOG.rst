@@ -9,11 +9,14 @@ Forthcoming
   default, so a task that ended while ``AVOIDING`` handed its latch, previous
   command and smoothed speed cap to the next goal. It now clears the core's
   temporal state, as ``activate()`` does.
-* Nav2 plugin: ``setSpeedLimit()`` scales the forward, reverse and lateral
-  bounds (``limits.v_max``, ``limits.v_min``, ``limits.vy_max``) by one ratio.
-  Only ``limits.v_max`` was capped, so a base configured for reverse backed up
-  at full ``limits.v_min`` speed inside a speed zone. A negative or non-finite
-  limit is ignored with a warning, and the limit is stored atomically: the
+* Nav2 plugin: ``setSpeedLimit()`` scales every velocity bound
+  (``limits.v_max``, ``limits.v_min``, ``limits.vy_max`` and ``limits.w_max``)
+  by one ratio, as MPPI and DWB do. Only ``limits.v_max`` was capped, so a base
+  configured for reverse backed up at full ``limits.v_min`` speed inside a
+  speed zone, and turned on the spot at full ``limits.w_max``; a speed zone now
+  slows turning as much as travel and keeps the drivable curvature. A negative
+  or non-finite limit is ignored with a warning, and the limit is stored
+  atomically: the
   Controller Server calls ``setSpeedLimit()`` from its executor thread while
   ``computeVelocityCommands()`` runs on the controller thread, which was a data
   race on a plain ``float``.

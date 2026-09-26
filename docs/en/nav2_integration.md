@@ -98,11 +98,14 @@ handler's window, not the window BAC evaluates.
 calls whenever a task ends (succeeded, cancelled or failed), clears the core's temporal state: the `AVOIDING`
 latch, the previously selected command, the smoothed speed cap and the alignment mode. The next goal therefore
 starts as it would after activation instead of inheriting the last task's latch. `setSpeedLimit()`, driven by
-Speed Filter or any other `speed_limit` publisher, scales the forward, reverse and lateral bounds
-(`limits.v_max`, `limits.v_min`, `limits.vy_max`) by one ratio: a percentage directly, an absolute limit
-relative to `limits.v_max`. `0` (`NO_SPEED_LIMIT`) or 100 % restores the configured bounds; a limit above them
-does not raise them, and a negative or non-finite limit is ignored with a warning. The yaw-rate bound
-`limits.w_max` is not scaled, so a speed zone slows travel without slowing a turn in place.
+Speed Filter or any other `speed_limit` publisher, scales every velocity bound (`limits.v_max`, `limits.v_min`,
+`limits.vy_max` and the yaw rate `limits.w_max`) by one ratio, as MPPI and DWB do: a percentage directly, an
+absolute limit relative to `limits.v_max`. A speed zone therefore slows turning, a turn in place included, as
+much as travel, and the curvature the robot can drive is unchanged. `0` (`NO_SPEED_LIMIT`) or 100 % restores the
+configured bounds; a limit above them does not raise them, and a negative or non-finite limit is ignored with a
+warning. A limit strong enough to scale a bound below its output deadband (`velocity_min`, `angvel_min`) stops
+that motion: with the defaults (`limits.w_max` 1.0 rad/s, `angvel_min` 0.01 rad/s), a limit below 1 % of
+`limits.v_max` rounds a differential-drive or holonomic turn to zero.
 
 ## Ackermann command contract
 

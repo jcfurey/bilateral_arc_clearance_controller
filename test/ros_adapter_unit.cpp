@@ -499,7 +499,8 @@ void testPlanYawAdapterConfiguration()
 
 /// The lifecycle reconfigure path (deactivate, cleanup, change, configure,
 /// activate) must apply the new value, reset() must start the next task
-/// clean, and the Nav2 speed limit must bound reverse speed, not only forward.
+/// clean, and the Nav2 speed limit must bound reverse speed and turning, not
+/// only forward speed.
 void testReconfigureAndSpeedLimit()
 {
   rclcpp::NodeOptions costmap_options;
@@ -623,9 +624,29 @@ void testReconfigureAndSpeedLimit()
                restored.twist.angular.z == free.twist.angular.z,
            "removing the speed limit restores the configured bounds exactly");
 
+    // Turning slows with the rest, as in MPPI and DWB. Without the obstacle a
+    // rear plan is turned onto on the spot; under the same 2.5 % limit the yaw
+    // rate may not exceed 2.5 % of limits.w_max (0.025 rad/s, still above the
+    // angvel_min deadband, so the robot keeps turning, only slower).
+    costmap->getCostmap()->setCost(mx, my, nav2_costmap_2d::FREE_SPACE);
+    const nav_msgs::msg::Path behind = rearPlan("base_link");
+    givePlan(limited, behind);
+    limited.setSpeedLimit(0.0, false);
+    limited.reset();
+    const geometry_msgs::msg::TwistStamped free_turn = tick(limited, robot_pose, standstill, behind);
+    expect(std::fabs(free_turn.twist.angular.z) > 0.05,
+           "without a speed limit a rear plan is turned onto (" +
+               std::to_string(free_turn.twist.angular.z) + " rad/s)");
+    limited.setSpeedLimit(0.01, false);
+    limited.reset();
+    const geometry_msgs::msg::TwistStamped slow_turn = tick(limited, robot_pose, standstill, behind);
+    expect(std::fabs(slow_turn.twist.angular.z) > 0.0 &&
+               std::fabs(slow_turn.twist.angular.z) <= 0.025 + 1e-6,
+           "a 0.01 m/s Nav2 speed limit slows turning to 2.5 % of limits.w_max (" +
+               std::to_string(slow_turn.twist.angular.z) + " rad/s)");
+
     limited.deactivate();
     limited.cleanup();
-    costmap->getCostmap()->setCost(mx, my, nav2_costmap_2d::FREE_SPACE);
   }
   costmap->cleanup();
 }

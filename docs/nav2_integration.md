@@ -94,11 +94,13 @@ Nav2 1.5では`nav2_core::Controller`インターフェースが変わった。�
 失敗のいずれでも）にController Serverが呼ぶ`reset()`は、coreの時間的な状態、すなわち`AVOIDING`の
 ラッチ、前回選んだ指令、平滑化した速度cap、整列モードをクリアする。次のgoalは前タスクのラッチを
 引き継がず、activate直後と同じ状態から始まる。Speed Filterなどの`speed_limit`配信から呼ばれる
-`setSpeedLimit()`は、前進・後退・横の上限（`limits.v_max`、`limits.v_min`、`limits.vy_max`）を一つの比率で
-縮める。百分率はそのまま、絶対値は`limits.v_max`に対する比として扱う。`0`（`NO_SPEED_LIMIT`）または
-100 %で設定値に戻り、設定値を超える制限で上限が上がることはない。負または非有限の制限は警告して
-無視する。ヨーレート上限`limits.w_max`は縮めないので、速度制限区域は走行を遅くするがその場回頭は
-遅くしない。
+`setSpeedLimit()`は、MPPIやDWBと同じく全ての速度上限（`limits.v_max`、`limits.v_min`、`limits.vy_max`、
+ヨーレートの`limits.w_max`）を一つの比率で縮める。百分率はそのまま、絶対値は`limits.v_max`に対する比
+として扱う。したがって速度制限区域では走行と同じ割合で旋回（その場回頭を含む）も遅くなり、走行できる
+曲率は変わらない。`0`（`NO_SPEED_LIMIT`）または100 %で設定値に戻り、設定値を超える制限で上限が上がる
+ことはない。負または非有限の制限は警告して無視する。上限を出力の不感帯（`velocity_min`、`angvel_min`）
+未満まで縮める強い制限では、その運動は止まる。既定値（`limits.w_max` 1.0 rad/s、`angvel_min` 0.01 rad/s）
+では、`limits.v_max`の1 %未満の制限で差動二輪と全方向モデルの旋回は0に丸められる。
 
 ## Ackermann指令contract
 

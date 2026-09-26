@@ -102,11 +102,12 @@ public:
                                                            nav2_core::GoalChecker *goal_checker) override;
 #endif
 
-  /// Nav2 speed limit (Speed Filter, speed zones). Scales every translational
-  /// limit - forward, reverse and lateral - by one ratio, the way the MPPI
-  /// controller does, so a zone caps the speed in every direction the model
-  /// can drive. 0 (nav2_costmap_2d::NO_SPEED_LIMIT) or 100 % removes it.
-  /// Called from the controller server's executor thread, concurrently with
+  /// Nav2 speed limit (Speed Filter, speed zones). Scales every velocity
+  /// limit - forward, reverse, lateral and yaw rate - by one ratio, the way
+  /// the MPPI and DWB controllers do, so a zone slows the robot in every
+  /// direction it can move, turning included, and keeps the curvature it can
+  /// drive. 0 (nav2_costmap_2d::NO_SPEED_LIMIT) or 100 % removes it. Called
+  /// from the controller server's executor thread, concurrently with
   /// computeVelocityCommands().
   void setSpeedLimit(const double &speed_limit, const bool &percentage) override;
 
@@ -184,7 +185,7 @@ private:
 
   BacCore core_;
 
-  /// Configured translational limits; the speed limit scales these.
+  /// Configured velocity limits; the speed limit scales these.
   Limits base_limits_;
   /// Speed-limit ratio in (0, 1]; 1 = unlimited. Written by setSpeedLimit()
   /// on the executor thread, read by computeVelocityCommands().

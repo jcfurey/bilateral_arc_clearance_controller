@@ -558,20 +558,22 @@ geometry_msgs::msg::TwistStamped
 BacController::computeCommand(const geometry_msgs::msg::PoseStamped &pose,
                               const geometry_msgs::msg::Twist &velocity)
 {
-  // The speed limit scales the sampled window's translational bounds. Only a
+  // The speed limit scales the velocity bounds, yaw rate included. Only a
   // change reaches setParams(); an unchanged limit costs a comparison.
   const float ratio = speed_ratio_.load();
   const Params &current_params = core_.params();
   const float v_max  = base_limits_.v_max * ratio;
   const float v_min  = base_limits_.v_min * ratio;
   const float vy_max = base_limits_.vy_max * ratio;
+  const float w_max  = base_limits_.w_max * ratio;
   if (current_params.limits.v_max != v_max || current_params.limits.v_min != v_min ||
-      current_params.limits.vy_max != vy_max)
+      current_params.limits.vy_max != vy_max || current_params.limits.w_max != w_max)
   {
     Params params       = current_params;
     params.limits.v_max  = v_max;
     params.limits.v_min  = v_min;
     params.limits.vy_max = vy_max;
+    params.limits.w_max  = w_max;
     core_.setParams(params);
   }
 
@@ -621,7 +623,12 @@ BacController::setSpeedLimit(const double &speed_limit, const bool &percentage)
     ratio = percentage ? speed_limit / 100.0 :
                          speed_limit / static_cast<double>(base_limits_.v_max);
   }
-  speed_ratio_.store(static_cast<float>(std::min(1.0, ratio)));
+  // A positive limit never scales a bound to zero: the holonomic and Ackermann
+  // models reject a zero limits.w_max, so a limit small enough to underflow
+  // the ratio would fail every tick. A millionth of the configured speed is
+  // far below the output deadbands, so the robot stands still either way.
+  constexpr double kMinSpeedRatio = 1e-6;
+  speed_ratio_.store(static_cast<float>(std::clamp(ratio, kMinSpeedRatio, 1.0)));
 }
 
 }  // namespace bac
