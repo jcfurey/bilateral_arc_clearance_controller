@@ -6,7 +6,14 @@ FROM ros:${ROS_DISTRO}-ros-base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# dist-upgrade first: the base image is rebuilt less often than
+# packages.ros.org is synced, and across a sync that changes generated
+# typesupport code the image's preinstalled packages no longer link with the
+# ones rosdep installs below (a fresh geographic_msgs against the image's
+# std_msgs failed every ROS test binary on Lyrical). This layer is cached by
+# Docker; rebuild with --no-cache to pick up a newer sync.
 RUN apt-get update \
+    && apt-get dist-upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
       python3-colcon-common-extensions \
       python3-rosdep \

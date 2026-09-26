@@ -77,6 +77,14 @@ jobs:
         shell: bash
         run: |
           apt-get update
+          # The ros:<distro>-ros-base image is rebuilt less often than
+          # packages.ros.org is synced, so the packages baked into it can be
+          # older than the ones rosdep installs next. Across a sync that
+          # changes generated typesupport code they no longer link together
+          # (seen on Lyrical: a freshly installed geographic_msgs referenced a
+          # symbol the image's std_msgs did not export, and every ROS test
+          # binary failed to load). Bring the image up to the same sync first.
+          apt-get dist-upgrade -y --no-install-recommends
           apt-get install -y --no-install-recommends python3-colcon-common-extensions python3-rosdep
           rosdep update --rosdistro ${{ matrix.distro }}
           rosdep install --from-paths . --ignore-src -r -y --rosdistro ${{ matrix.distro }}

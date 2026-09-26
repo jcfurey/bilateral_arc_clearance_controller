@@ -25,7 +25,12 @@ Forthcoming
   ``docker/nav2``, taking the ROS 2 distribution as an argument (Lyrical by
   default, ``jazzy`` on request), and run the hosted CI's ROS job on both. The
   harness additionally starts the installed ``bac_filter.launch.py`` on the
-  distribution's Python (3.14 on Lyrical).
+  distribution's Python (3.14 on Lyrical). Both the harness image and the CI
+  job upgrade the base image's packages to the current packages.ros.org sync
+  before resolving the manifest: the image is rebuilt less often than the
+  repository is synced, and across a sync that changes generated typesupport
+  code the image's ``std_msgs`` no longer links with a freshly installed
+  dependency (every ROS test binary failed to load on Lyrical).
 * Generalise the DIRECTION OF TRAVEL through the whole controller, not just the
   geometry. The candidate stopping test, the contact horizon, the braking
   margin, the emergency zone and its escape gate, and the deceleration ramp all
